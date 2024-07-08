@@ -51,7 +51,7 @@ pub struct TomlManifest {
     pub replace: Option<BTreeMap<String, TomlDependency>>,
     pub patch: Option<BTreeMap<String, BTreeMap<PackageName, TomlDependency>>>,
     pub workspace: Option<TomlWorkspace>,
-    pub badges: Option<InheritableBtreeMap>,
+    pub badges: Option<BTreeMap<String, BTreeMap<String, String>>>,
     pub lints: Option<InheritableLints>,
 
     /// Report unused keys (see also nested `_unused_keys`)
@@ -104,6 +104,10 @@ impl TomlManifest {
 
     pub fn features(&self) -> Option<&BTreeMap<FeatureName, Vec<String>>> {
         self.features.as_ref()
+    }
+
+    pub fn resolved_lints(&self) -> Result<Option<&TomlLints>, UnresolvedError> {
+        self.lints.as_ref().map(|l| l.resolved()).transpose()
     }
 }
 
@@ -194,6 +198,89 @@ pub struct TomlPackage {
     pub _invalid_cargo_features: Option<InvalidCargoFeatures>,
 }
 
+impl TomlPackage {
+    pub fn resolved_edition(&self) -> Result<Option<&String>, UnresolvedError> {
+        self.edition.as_ref().map(|v| v.resolved()).transpose()
+    }
+
+    pub fn resolved_rust_version(&self) -> Result<Option<&RustVersion>, UnresolvedError> {
+        self.rust_version.as_ref().map(|v| v.resolved()).transpose()
+    }
+
+    pub fn resolved_version(&self) -> Result<Option<&semver::Version>, UnresolvedError> {
+        self.version.as_ref().map(|v| v.resolved()).transpose()
+    }
+
+    pub fn resolved_authors(&self) -> Result<Option<&Vec<String>>, UnresolvedError> {
+        self.authors.as_ref().map(|v| v.resolved()).transpose()
+    }
+
+    pub fn resolved_build(&self) -> Result<Option<&String>, UnresolvedError> {
+        let readme = self.build.as_ref().ok_or(UnresolvedError)?;
+        match readme {
+            StringOrBool::Bool(false) => Ok(None),
+            StringOrBool::Bool(true) => Err(UnresolvedError),
+            StringOrBool::String(value) => Ok(Some(value)),
+        }
+    }
+
+    pub fn resolved_exclude(&self) -> Result<Option<&Vec<String>>, UnresolvedError> {
+        self.exclude.as_ref().map(|v| v.resolved()).transpose()
+    }
+
+    pub fn resolved_include(&self) -> Result<Option<&Vec<String>>, UnresolvedError> {
+        self.include.as_ref().map(|v| v.resolved()).transpose()
+    }
+
+    pub fn resolved_publish(&self) -> Result<Option<&VecStringOrBool>, UnresolvedError> {
+        self.publish.as_ref().map(|v| v.resolved()).transpose()
+    }
+
+    pub fn resolved_description(&self) -> Result<Option<&String>, UnresolvedError> {
+        self.description.as_ref().map(|v| v.resolved()).transpose()
+    }
+
+    pub fn resolved_homepage(&self) -> Result<Option<&String>, UnresolvedError> {
+        self.homepage.as_ref().map(|v| v.resolved()).transpose()
+    }
+
+    pub fn resolved_documentation(&self) -> Result<Option<&String>, UnresolvedError> {
+        self.documentation
+            .as_ref()
+            .map(|v| v.resolved())
+            .transpose()
+    }
+
+    pub fn resolved_readme(&self) -> Result<Option<&String>, UnresolvedError> {
+        let readme = self.readme.as_ref().ok_or(UnresolvedError)?;
+        readme.resolved().and_then(|sb| match sb {
+            StringOrBool::Bool(false) => Ok(None),
+            StringOrBool::Bool(true) => Err(UnresolvedError),
+            StringOrBool::String(value) => Ok(Some(value)),
+        })
+    }
+
+    pub fn resolved_keywords(&self) -> Result<Option<&Vec<String>>, UnresolvedError> {
+        self.keywords.as_ref().map(|v| v.resolved()).transpose()
+    }
+
+    pub fn resolved_categories(&self) -> Result<Option<&Vec<String>>, UnresolvedError> {
+        self.categories.as_ref().map(|v| v.resolved()).transpose()
+    }
+
+    pub fn resolved_license(&self) -> Result<Option<&String>, UnresolvedError> {
+        self.license.as_ref().map(|v| v.resolved()).transpose()
+    }
+
+    pub fn resolved_license_file(&self) -> Result<Option<&String>, UnresolvedError> {
+        self.license_file.as_ref().map(|v| v.resolved()).transpose()
+    }
+
+    pub fn resolved_repository(&self) -> Result<Option<&String>, UnresolvedError> {
+        self.repository.as_ref().map(|v| v.resolved()).transpose()
+    }
+}
+
 /// An enum that allows for inheriting keys from a workspace in a Cargo.toml.
 #[derive(Serialize, Copy, Clone, Debug)]
 #[serde(untagged)]
@@ -205,6 +292,10 @@ pub enum InheritableField<T> {
 }
 
 impl<T> InheritableField<T> {
+    pub fn resolved(&self) -> Result<&T, UnresolvedError> {
+        self.as_value().ok_or(UnresolvedError)
+    }
+
     pub fn as_value(&self) -> Option<&T> {
         match self {
             InheritableField::Inherit(_) => None,
@@ -504,6 +595,13 @@ impl InheritableDependency {
             InheritableDependency::Inherit(w) => w._unused_keys.keys().cloned().collect(),
         }
     }
+
+    pub fn resolved(&self) -> Result<&TomlDependency, UnresolvedError> {
+        match self {
+            InheritableDependency::Value(d) => Ok(d),
+            InheritableDependency::Inherit(_) => Err(UnresolvedError),
+        }
+    }
 }
 
 impl<'de> de::Deserialize<'de> for InheritableDependency {
@@ -582,6 +680,13 @@ impl TomlDependency {
         match self {
             TomlDependency::Detailed(d) => d.public.unwrap_or(false),
             TomlDependency::Simple(..) => false,
+        }
+    }
+
+    pub fn default_features(&self) -> Option<bool> {
+        match self {
+            TomlDependency::Detailed(d) => d.default_features(),
+            TomlDependency::Simple(..) => None,
         }
     }
 
@@ -1118,7 +1223,6 @@ pub struct TomlTarget {
     pub doctest: Option<bool>,
     pub bench: Option<bool>,
     pub doc: Option<bool>,
-    pub plugin: Option<bool>,
     pub doc_scrape_examples: Option<bool>,
     pub proc_macro: Option<bool>,
     #[serde(rename = "proc_macro")]
@@ -1297,6 +1401,16 @@ pub struct InheritableLints {
     pub lints: TomlLints,
 }
 
+impl InheritableLints {
+    pub fn resolved(&self) -> Result<&TomlLints, UnresolvedError> {
+        if self.workspace {
+            Err(UnresolvedError)
+        } else {
+            Ok(&self.lints)
+        }
+    }
+}
+
 fn is_false(b: &bool) -> bool {
     !b
 }
@@ -1388,6 +1502,13 @@ impl TomlLint {
             Self::Config(config) => config.priority,
         }
     }
+
+    pub fn config(&self) -> Option<&toml::Table> {
+        match self {
+            Self::Level(_) => None,
+            Self::Config(config) => Some(&config.config),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -1396,9 +1517,11 @@ pub struct TomlLintConfig {
     pub level: TomlLintLevel,
     #[serde(default)]
     pub priority: i8,
+    #[serde(flatten)]
+    pub config: toml::Table,
 }
 
-#[derive(Serialize, Deserialize, Debug, Copy, Clone)]
+#[derive(Serialize, Deserialize, Debug, Copy, Clone, Eq, PartialEq)]
 #[serde(rename_all = "kebab-case")]
 pub enum TomlLintLevel {
     Forbid,
@@ -1512,3 +1635,9 @@ impl<'de> de::Deserialize<'de> for PathValue {
         Ok(PathValue(String::deserialize(deserializer)?.into()))
     }
 }
+
+/// Error validating names in Cargo.
+#[derive(Debug, thiserror::Error)]
+#[error("manifest field was not resolved")]
+#[non_exhaustive]
+pub struct UnresolvedError;

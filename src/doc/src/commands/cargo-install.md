@@ -238,11 +238,6 @@ See also the <code>--profile</code> option for choosing a specific profile by na
 See <a href="../reference/profiles.html">the reference</a> for more details on profiles.</dd>
 
 
-<dt class="option-term" id="option-cargo-install---ignore-rust-version"><a class="option-anchor" href="#option-cargo-install---ignore-rust-version"></a><code>--ignore-rust-version</code></dt>
-<dd class="option-desc">Install the target even if the selected Rust compiler is older than the
-required Rust version as configured in the project’s <code>rust-version</code> field.</dd>
-
-
 <dt class="option-term" id="option-cargo-install---timings=fmts"><a class="option-anchor" href="#option-cargo-install---timings=fmts"></a><code>--timings=</code><em>fmts</em></dt>
 <dd class="option-desc">Output information how long each compilation takes, and track concurrency
 information over time. Accepts an optional comma-separated list of output
@@ -266,15 +261,20 @@ information about timing information.</li>
 ### Manifest Options
 
 <dl>
-<dt class="option-term" id="option-cargo-install---frozen"><a class="option-anchor" href="#option-cargo-install---frozen"></a><code>--frozen</code></dt>
+<dt class="option-term" id="option-cargo-install---ignore-rust-version"><a class="option-anchor" href="#option-cargo-install---ignore-rust-version"></a><code>--ignore-rust-version</code></dt>
+<dd class="option-desc">Ignore <code>rust-version</code> specification in packages.</dd>
+
+
 <dt class="option-term" id="option-cargo-install---locked"><a class="option-anchor" href="#option-cargo-install---locked"></a><code>--locked</code></dt>
-<dd class="option-desc">Either of these flags requires that the <code>Cargo.lock</code> file be
-up-to-date. If the lock file is missing, or it needs to be updated, Cargo will
-exit with an error. The <code>--frozen</code> flag also prevents Cargo from
-attempting to access the network to determine if it is out-of-date.</p>
-<p>These may be used in environments where you want to assert that the
-<code>Cargo.lock</code> file is up-to-date (such as a CI build) or want to avoid network
-access.</dd>
+<dd class="option-desc">Asserts that the exact same dependencies and versions are used as when the
+existing <code>Cargo.lock</code> file was originally generated. Cargo will exit with an
+error when either of the following scenarios arises:</p>
+<ul>
+<li>The lock file is missing.</li>
+<li>Cargo attempted to change the lock file due to a different dependency resolution.</li>
+</ul>
+<p>It may be used in environments where deterministic builds are desired,
+such as in CI pipelines.</dd>
 
 
 <dt class="option-term" id="option-cargo-install---offline"><a class="option-anchor" href="#option-cargo-install---offline"></a><code>--offline</code></dt>
@@ -288,6 +288,10 @@ if there might be a newer version as indicated in the local copy of the index.
 See the <a href="cargo-fetch.html">cargo-fetch(1)</a> command to download dependencies before going
 offline.</p>
 <p>May also be specified with the <code>net.offline</code> <a href="../reference/config.html">config value</a>.</dd>
+
+
+<dt class="option-term" id="option-cargo-install---frozen"><a class="option-anchor" href="#option-cargo-install---frozen"></a><code>--frozen</code></dt>
+<dd class="option-desc">Equivalent to specifying both <code>--locked</code> and <code>--offline</code>.</dd>
 
 </dl>
 

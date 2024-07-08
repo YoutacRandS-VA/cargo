@@ -80,6 +80,7 @@
 //! config settings[^5]                        | ✓           |
 //! is_std                                     |             | ✓
 //! `[lints]` table[^6]                        | ✓           |
+//! `[lints.rust.unexpected_cfgs.check-cfg]`   | ✓           |
 //!
 //! [^1]: Build script and bin dependencies are not included.
 //!
@@ -1414,11 +1415,32 @@ fn calculate_normal(
     // hashed to take up less space on disk as we just need to know when things
     // change.
     let extra_flags = if unit.mode.is_doc() || unit.mode.is_doc_scrape() {
-        build_runner.bcx.rustdocflags_args(unit)
+        &unit.rustdocflags
     } else {
-        build_runner.bcx.rustflags_args(unit)
+        &unit.rustflags
     }
     .to_vec();
+
+    // Include all the args from `[lints.rust.unexpected_cfgs.check-cfg]`
+    //
+    // HACK(#13975): duplicating the lookup logic here until `--check-cfg` is supported
+    // on Cargo's MSRV and we can centralize the logic in `lints_to_rustflags`
+    let mut lint_check_cfg = Vec::new();
+    if let Ok(Some(lints)) = unit.pkg.manifest().resolved_toml().resolved_lints() {
+        if let Some(rust_lints) = lints.get("rust") {
+            if let Some(unexpected_cfgs) = rust_lints.get("unexpected_cfgs") {
+                if let Some(config) = unexpected_cfgs.config() {
+                    if let Some(check_cfg) = config.get("check-cfg") {
+                        if let Ok(check_cfgs) =
+                            toml::Value::try_into::<Vec<String>>(check_cfg.clone())
+                        {
+                            lint_check_cfg = check_cfgs;
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     let profile_hash = util::hash_u64((
         &unit.profile,
@@ -1426,6 +1448,7 @@ fn calculate_normal(
         build_runner.bcx.extra_args_for(unit),
         build_runner.lto[unit],
         unit.pkg.manifest().lint_rustflags(),
+        lint_check_cfg,
     ));
     // Include metadata since it is exposed as environment variables.
     let m = unit.pkg.manifest().metadata();
@@ -1454,14 +1477,7 @@ fn calculate_normal(
         // actually affect the output artifact so there's no need to hash it.
         path: util::hash_u64(path_args(build_runner.bcx.ws, unit).0),
         features: format!("{:?}", unit.features),
-        // Note we curently only populate `declared_features` when `-Zcheck-cfg`
-        // is passed since it's the only user-facing toggle that will make this
-        // fingerprint relevant.
-        declared_features: if build_runner.bcx.gctx.cli_unstable().check_cfg {
-            format!("{declared_features:?}")
-        } else {
-            "".to_string()
-        },
+        declared_features: format!("{declared_features:?}"),
         deps,
         local: Mutex::new(local),
         memoized_hash: Mutex::new(None),
@@ -1496,7 +1512,7 @@ fn calculate_run_custom_build(
 An I/O error happened. Please make sure you can access the file.
 
 By default, if your project contains a build script, cargo scans all files in
-it to determine whether a rebuild is needed. If you don't expect to access the 
+it to determine whether a rebuild is needed. If you don't expect to access the
 file, specify `rerun-if-changed` in your build script.
 See https://doc.rust-lang.org/cargo/reference/build-scripts.html#rerun-if-changed for more information.";
             pkg_fingerprint(build_runner.bcx, &unit.pkg).map_err(|err| {
@@ -1526,11 +1542,14 @@ See https://doc.rust-lang.org/cargo/reference/build-scripts.html#rerun-if-change
             .collect::<CargoResult<Vec<_>>>()?
     };
 
+    let rustflags = unit.rustflags.to_vec();
+
     Ok(Fingerprint {
         local: Mutex::new(local),
         rustc: util::hash_u64(&build_runner.bcx.rustc().verbose_version),
         deps,
         outputs: if overridden { Vec::new() } else { vec![output] },
+        rustflags,
 
         // Most of the other info is blank here as we don't really include it
         // in the execution of the build script, but... this may be a latent

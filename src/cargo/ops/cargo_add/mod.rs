@@ -55,7 +55,7 @@ pub struct AddOptions<'a> {
     /// Act as if dependencies will be added
     pub dry_run: bool,
     /// Whether the minimum supported Rust version should be considered during resolution
-    pub honor_rust_version: bool,
+    pub honor_rust_version: Option<bool>,
 }
 
 /// Add dependencies to a manifest
@@ -78,7 +78,7 @@ pub fn add(workspace: &Workspace<'_>, options: &AddOptions<'_>) -> CargoResult<(
         );
     }
 
-    let mut registry = PackageRegistry::new(options.gctx)?;
+    let mut registry = workspace.package_registry()?;
 
     let deps = {
         let _lock = options
@@ -288,7 +288,7 @@ fn resolve_dependency(
     ws: &Workspace<'_>,
     spec: &Package,
     section: &DepTable,
-    honor_rust_version: bool,
+    honor_rust_version: Option<bool>,
     gctx: &GlobalContext,
     registry: &mut PackageRegistry<'_>,
 ) -> CargoResult<DependencyUI> {
@@ -349,11 +349,8 @@ fn resolve_dependency(
             }
             selected
         } else {
-            let source = crate::sources::PathSource::new(&path, src.source_id()?, gctx);
-            let package = source
-                .read_packages()?
-                .pop()
-                .expect("read_packages errors when no packages");
+            let mut source = crate::sources::PathSource::new(&path, src.source_id()?, gctx);
+            let package = source.root_package()?;
             Dependency::from(package.summary())
         };
         selected
@@ -400,14 +397,8 @@ fn resolve_dependency(
             }
             dependency = dependency.set_source(src);
         } else {
-            let latest = get_latest_dependency(
-                spec,
-                &dependency,
-                false,
-                honor_rust_version,
-                gctx,
-                registry,
-            )?;
+            let latest =
+                get_latest_dependency(spec, &dependency, honor_rust_version, gctx, registry)?;
 
             if dependency.name != latest.name {
                 gctx.shell().warn(format!(
@@ -493,7 +484,7 @@ fn check_invalid_ws_keys(toml_key: &str, arg: &DepOp) -> CargoResult<()> {
 }
 
 /// When the `--optional` option is added using `cargo add`, we need to
-/// check the current rust-version. As the `dep:` syntax is only avaliable
+/// check the current rust-version. As the `dep:` syntax is only available
 /// starting with Rust 1.60.0
 ///
 /// `true` means that the rust-version is None or the rust-version is higher
@@ -577,8 +568,7 @@ fn get_existing_dependency(
 fn get_latest_dependency(
     spec: &Package,
     dependency: &Dependency,
-    _flag_allow_prerelease: bool,
-    honor_rust_version: bool,
+    honor_rust_version: Option<bool>,
     gctx: &GlobalContext,
     registry: &mut PackageRegistry<'_>,
 ) -> CargoResult<Dependency> {
@@ -615,7 +605,7 @@ fn get_latest_dependency(
                 )
             })?;
 
-            if gctx.cli_unstable().msrv_policy && honor_rust_version {
+            if honor_rust_version.unwrap_or(true) {
                 let (req_msrv, is_msrv) = spec
                     .rust_version()
                     .cloned()
@@ -900,7 +890,7 @@ impl DependencyUI {
                     .map(|s| s.as_str()),
             );
         }
-        activated.remove("default");
+        activated.swap_remove("default");
         activated.sort();
         let mut deactivated = self
             .available_features

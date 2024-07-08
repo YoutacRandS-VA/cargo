@@ -4,12 +4,13 @@ use crate::core::global_cache_tracker;
 use crate::core::GitReference;
 use crate::core::SourceId;
 use crate::core::{Dependency, Package, PackageId};
+use crate::sources::git::utils::rev_to_oid;
 use crate::sources::git::utils::GitRemote;
 use crate::sources::source::MaybePackage;
 use crate::sources::source::QueryKind;
 use crate::sources::source::Source;
 use crate::sources::IndexSummary;
-use crate::sources::PathSource;
+use crate::sources::RecursivePathSource;
 use crate::util::cache_lock::CacheLockMode;
 use crate::util::errors::CargoResult;
 use crate::util::hex::short_hash;
@@ -23,7 +24,7 @@ use tracing::trace;
 use url::Url;
 
 /// `GitSource` contains one or more packages gathering from a Git repository.
-/// Under the hood it uses [`PathSource`] to discover packages inside the
+/// Under the hood it uses [`RecursivePathSource`] to discover packages inside the
 /// repository.
 ///
 /// ## Filesystem layout
@@ -78,7 +79,7 @@ pub struct GitSource<'gctx> {
     ///
     /// This gets set to `Some` after the git repo has been checked out
     /// (automatically handled via [`GitSource::block_until_ready`]).
-    path_source: Option<PathSource<'gctx>>,
+    path_source: Option<RecursivePathSource<'gctx>>,
     /// A short string that uniquely identifies the version of the checkout.
     ///
     /// This is typically a 7-character string of the OID hash, automatically
@@ -101,7 +102,7 @@ impl<'gctx> GitSource<'gctx> {
         assert!(source_id.is_git(), "id is not git, id={}", source_id);
 
         let remote = GitRemote::new(source_id.url());
-        // Fallback to git ref from mainfest if there is no locked revision.
+        // Fallback to git ref from manifest if there is no locked revision.
         let locked_rev = source_id
             .precise_git_fragment()
             .map(|s| Revision::new(s.into()))
@@ -171,14 +172,9 @@ enum Revision {
 
 impl Revision {
     fn new(rev: &str) -> Revision {
-        let oid = git2::Oid::from_str(rev).ok();
-        match oid {
-            // Git object ID is supposed to be a hex string of 20 (SHA1) or 32 (SHA256) bytes.
-            // Its length must be double to the underlying bytes (40 or 64),
-            // otherwise libgit2 would happily zero-pad the returned oid.
-            // See rust-lang/cargo#13188
-            Some(oid) if oid.as_bytes().len() * 2 == rev.len() => Revision::Locked(oid),
-            _ => Revision::Deferred(GitReference::Rev(rev.to_string())),
+        match rev_to_oid(rev) {
+            Some(oid) => Revision::Locked(oid),
+            None => Revision::Deferred(GitReference::Rev(rev.to_string())),
         }
     }
 }
@@ -360,12 +356,12 @@ impl<'gctx> Source for GitSource<'gctx> {
         let source_id = self
             .source_id
             .with_git_precise(Some(actual_rev.to_string()));
-        let path_source = PathSource::new_recursive(&checkout_path, source_id, self.gctx);
+        let path_source = RecursivePathSource::new(&checkout_path, source_id, self.gctx);
 
         self.path_source = Some(path_source);
         self.short_id = Some(short_id.as_str().into());
         self.locked_rev = Revision::Locked(actual_rev);
-        self.path_source.as_mut().unwrap().update()?;
+        self.path_source.as_mut().unwrap().load()?;
 
         // Hopefully this shouldn't incur too much of a performance hit since
         // most of this should already be in cache since it was just

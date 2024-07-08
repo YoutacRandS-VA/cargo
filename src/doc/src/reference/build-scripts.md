@@ -130,6 +130,8 @@ one detailed below.
   compiler.
 * [`cargo::rustc-cfg=KEY[="VALUE"]`](#rustc-cfg) --- Enables compile-time `cfg`
   settings.
+* [`cargo::rustc-check-cfg=CHECK_CFG`](#rustc-check-cfg) -- Register custom `cfg`s as
+  expected for compile-time checking of configs. 
 * [`cargo::rustc-env=VAR=VALUE`](#rustc-env) --- Sets an environment variable.
 * [`cargo::rustc-cdylib-link-arg=FLAG`](#rustc-cdylib-link-arg) --- Passes custom
   flags to a linker for cdylib crates.
@@ -170,7 +172,7 @@ native library using [FFI].
 
 The `LIB` string is passed directly to rustc, so it supports any syntax that
 `-l` does. \
-Currently the full supported syntax for `LIB` is `[KIND[:MODIFIERS]=]NAME[:RENAME]`.
+Currently the fully supported syntax for `LIB` is `[KIND[:MODIFIERS]=]NAME[:RENAME]`.
 
 The `-l` flag is only passed to the library target of the package, unless
 there is no library target, in which case it is passed to all targets. This is
@@ -233,7 +235,10 @@ equivalent to using [`rustc-link-lib`](#rustc-link-lib) and
 
 The `rustc-cfg` instruction tells Cargo to pass the given value to the
 [`--cfg` flag][option-cfg] to the compiler. This may be used for compile-time
-detection of features to enable [conditional compilation].
+detection of features to enable [conditional compilation]. Custom cfgs
+must either be expected using the [`cargo::rustc-check-cfg`](#rustc-check-cfg)
+instruction or usage will need to allow the [`unexpected_cfgs`][unexpected-cfgs]
+lint to avoid unexpected cfgs warnings.
 
 Note that this does *not* affect Cargo's dependency resolution. This cannot be
 used to enable an optional dependency, or enable other Cargo features.
@@ -249,6 +254,41 @@ identifier, the value should be a string.
 [cargo features]: features.md
 [conditional compilation]: ../../reference/conditional-compilation.md
 [option-cfg]: ../../rustc/command-line-arguments.md#option-cfg
+[unexpected-cfgs]: ../../rustc/lints/listing/warn-by-default.md#unexpected-cfgs
+
+### `cargo::rustc-check-cfg=CHECK_CFG` {#rustc-check-cfg}
+
+Add to the list of expected config names and values that is used when checking
+the _reachable_ cfg expressions with the [`unexpected_cfgs`][unexpected-cfgs] lint.
+
+The syntax of `CHECK_CFG` mirrors the `rustc` [`--check-cfg` flag][option-check-cfg], see
+[Checking conditional configurations][checking-conditional-configurations] for more details.
+
+> Note: `cargo:rustc-check-cfg` (single-colon) can be used if your MSRV is below Rust 1.77
+
+The instruction can be used like this:
+
+```rust,no_run
+// build.rs
+println!("cargo::rustc-check-cfg=cfg(foo, values(\"bar\"))");
+if foo_bar_condition {
+    println!("cargo::rustc-cfg=foo=\"bar\"");
+}
+```
+
+Note that all possible cfgs should be defined, regardless of which cfgs are
+currently enabled. This includes all possible values of a given cfg name.
+
+It is recommended to group the `cargo::rustc-check-cfg` and
+[`cargo::rustc-cfg`][option-cfg] instructions as closely as possible in order to
+avoid typos, missing check-cfg, stale cfgs...
+
+See also the
+[conditional compilation][conditional-compilation-example] example.
+
+[checking-conditional-configurations]: ../../rustc/check-cfg.html
+[option-check-cfg]: ../../rustc/command-line-arguments.md#option-check-cfg
+[conditional-compilation-example]: build-script-examples.md#conditional-compilation
 
 ### `cargo::rustc-env=VAR=VALUE` {#rustc-env}
 

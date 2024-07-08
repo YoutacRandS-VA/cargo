@@ -27,7 +27,7 @@ for a Rust API for reading the metadata.
 
 Within the same output format version, the compatibility is maintained, except
 some scenarios. The following is a non-exhaustive list of changes that are not
-considersed as incompatible:
+considered as incompatible:
 
 * **Adding new fields** — New fields will be added when needed. Reserving this
   helps Cargo evolve without bumping the format version too often.
@@ -151,7 +151,9 @@ The JSON output has the following format:
                     "crate_types": [
                         "bin"
                     ],
-                    /* The name of the target. */
+                    /* The name of the target.
+                       For lib targets, dashes will be replaced with underscores.
+                    */
                     "name": "my-package",
                     /* Absolute path to the root source file of the target. */
                     "src_path": "/path/to/my-package/src/main.rs",

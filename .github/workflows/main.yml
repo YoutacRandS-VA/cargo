@@ -83,6 +83,13 @@ jobs:
       - run: rustup update stable && rustup default stable
       - run: cargo stale-label
 
+  lint-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup update stable && rustup default stable
+      - run: cargo lint-docs --check
+
   # Ensure Cargo.lock is up-to-date
   lockfile:
     runs-on: ubuntu-latest
@@ -104,7 +111,7 @@ jobs:
       - name: Install cargo-semver-checks
         run: |
           mkdir installed-bins
-          curl -Lf https://github.com/obi1kenobi/cargo-semver-checks/releases/download/v0.29.0/cargo-semver-checks-x86_64-unknown-linux-gnu.tar.gz \
+          curl -Lf https://github.com/obi1kenobi/cargo-semver-checks/releases/download/v0.31.0/cargo-semver-checks-x86_64-unknown-linux-gnu.tar.gz \
             | tar -xz --directory=./installed-bins
           echo `pwd`/installed-bins >> $GITHUB_PATH
       - run: ci/validate-version-bump.sh
@@ -134,11 +141,11 @@ jobs:
           rust: nightly
           other: i686-unknown-linux-gnu
         - name: macOS x86_64 stable
-          os: macos-latest
+          os: macos-13
           rust: stable
           other: x86_64-apple-ios
         - name: macOS x86_64 nightly
-          os: macos-latest
+          os: macos-13
           rust: nightly
           other: x86_64-apple-ios
         - name: macOS aarch64 stable

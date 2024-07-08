@@ -14,11 +14,7 @@ negatively affect the runtime behavior, and for those cases it is usually a
 judgment call by the project maintainers whether or not it is a
 SemVer-incompatible change.
 
-See also [rust-semverver], which is an experimental tool that attempts to
-programmatically check compatibility rules.
-
 [Change categories]: #change-categories
-[rust-semverver]: https://github.com/rust-lang/rust-semverver
 [SemVer compatibility]: resolver.md#semver-compatibility
 
 ## Change categories
@@ -360,7 +356,7 @@ fn main() {
 #### Minor: Adding `repr(C)` to a default representation {#repr-c-add}
 
 It is safe to add `repr(C)` to a struct, union, or enum with [the default representation].
-This is safe because users should not make assumptions about the alignment, layout, or size of types with with the default representation.
+This is safe because users should not make assumptions about the alignment, layout, or size of types with the default representation.
 
 ```rust,ignore
 // MINOR CHANGE
@@ -1014,7 +1010,7 @@ fn main() {
 ```
 
 Mitigation strategies:
-* Do not add new new fields to all-public field structs.
+* Do not add new fields to all-public field structs.
 * Mark structs as [`#[non_exhaustive]`][non_exhaustive] when first introducing
   a struct to prevent users from using struct literal syntax, and instead
   provide a constructor method and/or [Default] implementation.

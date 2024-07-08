@@ -85,13 +85,10 @@ While you can use the crate in your implementation, it cannot be referenced in y
 Example uses:
 - Depending on multiple versions of a crate
 - Depend on crates with the same name from different registries"),
-            flag(
-                "ignore-rust-version",
-                "Ignore `rust-version` specification in packages (unstable)"
-            ),
         ])
         .arg_manifest_path_without_unsupported_path_tip()
         .arg_package("Package to modify")
+        .arg_ignore_rust_version()
         .arg_dry_run("Don't actually write the manifest")
         .arg_silent_suggestion()
         .next_help_heading("Source")
@@ -205,16 +202,7 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
 
     let dependencies = parse_dependencies(gctx, args)?;
 
-    let ignore_rust_version = args.flag("ignore-rust-version");
-    if ignore_rust_version && !gctx.cli_unstable().msrv_policy {
-        return Err(CliError::new(
-            anyhow::format_err!(
-                "`--ignore-rust-version` is unstable; pass `-Zmsrv-policy` to enable support for it"
-            ),
-            101,
-        ));
-    }
-    let honor_rust_version = !ignore_rust_version;
+    let honor_rust_version = args.honor_rust_version();
 
     let options = AddOptions {
         gctx,
@@ -226,11 +214,9 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
     };
     add(&ws, &options)?;
 
-    if !dry_run {
-        // Reload the workspace since we've changed dependencies
-        let ws = args.workspace(gctx)?;
-        resolve_ws(&ws)?;
-    }
+    // Reload the workspace since we've changed dependencies
+    let ws = args.workspace(gctx)?;
+    resolve_ws(&ws, dry_run)?;
 
     Ok(())
 }

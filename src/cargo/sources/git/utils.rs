@@ -831,7 +831,10 @@ pub fn with_fetch_options(
     let config_known_hosts = ssh_config.and_then(|ssh| ssh.known_hosts.as_ref());
     let diagnostic_home_config = gctx.diagnostic_home_config();
     network::retry::with_retry(gctx, || {
-        with_authentication(gctx, url, git_config, |f| {
+        // Hack: libgit2 disallows overriding the error from check_cb since v1.8.0,
+        // so we store the error additionally and unwrap it later
+        let mut check_cb_result = Ok(());
+        let auth_result = with_authentication(gctx, url, git_config, |f| {
             let port = Url::parse(url).ok().and_then(|url| url.port());
             let mut last_update = Instant::now();
             let mut rcb = git2::RemoteCallbacks::new();
@@ -840,14 +843,24 @@ pub fn with_fetch_options(
             let mut counter = MetricsCounter::<10>::new(0, last_update);
             rcb.credentials(f);
             rcb.certificate_check(|cert, host| {
-                super::known_hosts::certificate_check(
+                match super::known_hosts::certificate_check(
                     gctx,
                     cert,
                     host,
                     port,
                     config_known_hosts,
                     &diagnostic_home_config,
-                )
+                ) {
+                    Ok(status) => Ok(status),
+                    Err(e) => {
+                        check_cb_result = Err(e);
+                        // This is not really used because it'll be overridden by libgit2
+                        // See https://github.com/libgit2/libgit2/commit/9a9f220119d9647a352867b24b0556195cb26548
+                        Err(git2::Error::from_str(
+                            "invalid or unknown remote ssh hostkey",
+                        ))
+                    }
+                }
             });
             rcb.transfer_progress(|stats| {
                 let indexed_deltas = stats.indexed_deltas();
@@ -889,7 +902,11 @@ pub fn with_fetch_options(
             let mut opts = git2::FetchOptions::new();
             opts.remote_callbacks(rcb);
             cb(opts)
-        })?;
+        });
+        if auth_result.is_err() {
+            check_cb_result?;
+        }
+        auth_result?;
         Ok(())
     })
 }
@@ -1413,8 +1430,17 @@ fn github_fast_path(
                 // the branch has moved.
                 if let Some(local_object) = local_object {
                     if is_short_hash_of(rev, local_object) {
+                        debug!("github fast path already has {local_object}");
                         return Ok(FastPathRev::UpToDate);
                     }
+                }
+                // If `rev` is a full commit hash, the only thing it can resolve
+                // to is itself. Don't bother talking to GitHub in that case
+                // either. (This ensures that we always attempt to fetch the
+                // commit directly even if we can't reach the GitHub API.)
+                if let Some(oid) = rev_to_oid(rev) {
+                    debug!("github fast path is already a full commit hash {rev}");
+                    return Ok(FastPathRev::NeedsFetch(oid));
                 }
                 rev
             } else {
@@ -1452,6 +1478,7 @@ fn github_fast_path(
     handle.get(true)?;
     handle.url(&url)?;
     handle.useragent("cargo")?;
+    handle.follow_location(true)?; // follow redirects
     handle.http_headers({
         let mut headers = List::new();
         headers.append("Accept: application/vnd.github.3.sha")?;
@@ -1472,14 +1499,17 @@ fn github_fast_path(
 
     let response_code = handle.response_code()?;
     if response_code == 304 {
+        debug!("github fast path up-to-date");
         Ok(FastPathRev::UpToDate)
     } else if response_code == 200 {
         let oid_to_fetch = str::from_utf8(&response_body)?.parse::<Oid>()?;
+        debug!("github fast path fetch {oid_to_fetch}");
         Ok(FastPathRev::NeedsFetch(oid_to_fetch))
     } else {
         // Usually response_code == 404 if the repository does not exist, and
         // response_code == 422 if exists but GitHub is unable to resolve the
         // requested rev.
+        debug!("github fast path bad response code {response_code}");
         Ok(FastPathRev::Indeterminate)
     }
 }
@@ -1600,4 +1630,20 @@ mod tests {
             );
         }
     }
+}
+
+/// Turns a full commit hash revision into an oid.
+///
+/// Git object ID is supposed to be a hex string of 20 (SHA1) or 32 (SHA256) bytes.
+/// Its length must be double to the underlying bytes (40 or 64),
+/// otherwise libgit2 would happily zero-pad the returned oid.
+///
+/// See:
+///
+/// * <https://github.com/rust-lang/cargo/issues/13188>
+/// * <https://github.com/rust-lang/cargo/issues/13968>
+pub(super) fn rev_to_oid(rev: &str) -> Option<Oid> {
+    Oid::from_str(rev)
+        .ok()
+        .filter(|oid| oid.as_bytes().len() * 2 == rev.len())
 }

@@ -1,5 +1,7 @@
 //! Tests for the `cargo generate-lockfile` command.
 
+#![allow(deprecated)]
+
 use cargo_test_support::registry::{Package, RegistryBuilder};
 use cargo_test_support::{basic_manifest, paths, project, ProjectBuilder};
 use std::fs;
@@ -90,7 +92,7 @@ fn no_index_update() {
         .with_stderr(
             "\
 [UPDATING] `[..]` index
-[LOCKING] 2 packages
+[LOCKING] 2 packages to latest compatible versions
 ",
         )
         .run();
@@ -100,7 +102,7 @@ fn no_index_update() {
         .with_stdout("")
         .with_stderr(
             "\
-[LOCKING] 2 packages
+[LOCKING] 2 packages to latest compatible versions
 ",
         )
         .run();
@@ -234,6 +236,42 @@ fn duplicate_entries_in_lockfile() {
             "[..]package collision in the lockfile: packages common [..] and \
              common [..] are different, but only one can be written to \
              lockfile unambiguously",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn generate_lockfile_holds_lock_and_offline() {
+    Package::new("syn", "1.0.0").publish();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+
+                [dependencies]
+                syn = "1.0"
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .build();
+
+    p.cargo("generate-lockfile")
+        .with_stderr(
+            "\
+[UPDATING] `[..]` index
+[LOCKING] 2 packages to latest compatible versions
+",
+        )
+        .run();
+
+    p.cargo("generate-lockfile --offline")
+        .with_stderr_contains(
+            "\
+[LOCKING] 2 packages to latest compatible versions
+",
         )
         .run();
 }

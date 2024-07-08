@@ -6,6 +6,8 @@
 //! what happens when time passes. The [`days_ago_unix`] and
 //! [`months_ago_unix`] functions help with setting this value.
 
+#![allow(deprecated)]
+
 use super::config::GlobalContextBuilder;
 use cargo::core::global_cache_tracker::{self, DeferredGlobalLastUse, GlobalCacheTracker};
 use cargo::util::cache_lock::CacheLockMode;
@@ -22,6 +24,7 @@ use std::fmt::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::OnceLock;
 use std::time::{Duration, SystemTime};
 
 /// Helper to create a simple `foo` project which depends on a registry
@@ -72,7 +75,18 @@ fn get_git_checkout_names(db_name: &str) -> Vec<String> {
 }
 
 fn days_ago(n: u64) -> SystemTime {
-    SystemTime::now() - Duration::from_secs(60 * 60 * 24 * n)
+    now() - Duration::from_secs(60 * 60 * 24 * n)
+}
+
+fn now() -> SystemTime {
+    // This captures the time once to avoid potential time boundaries or
+    // inconsistencies affecting a test. For example, on a fast system
+    // `days_ago(1)` called twice in a row will return the same answer.
+    // However, on a slower system, or if the clock happens to flip over from
+    // one second to the next, then it would return different answers. This
+    // ensures that it always returns the same answer.
+    static START: OnceLock<SystemTime> = OnceLock::new();
+    *START.get_or_init(|| SystemTime::now())
 }
 
 /// Helper for simulating running cargo in the past. Use with the
@@ -1481,6 +1495,7 @@ fn clean_max_git_age() {
         .with_stderr(
             "\
 [UPDATING] git repository [..]
+[LOCKING] 1 package to latest compatible version
 [UPDATING] git_a v1.0.0 [..]
 ",
         )
@@ -1562,6 +1577,7 @@ fn clean_max_src_crate_age() {
         .with_stderr(
             "\
 [UPDATING] `dummy-registry` index
+[LOCKING] 1 package to latest compatible version
 [UPDATING] bar v1.0.0 -> v1.0.1
 ",
         )

@@ -28,12 +28,12 @@ fn case() {
 
     snapbox::cmd::Command::cargo_ui()
         .arg("remove")
-        .args(["--target", "x86_64-unknown-linux-gnu", "toml"])
+        .args(["--target", "wasm32-unknown-unknown", "toml"])
         .current_dir(cwd)
         .assert()
         .code(101)
-        .stdout_matches(str![""])
-        .stderr_matches(file!["stderr.term.svg"]);
+        .stdout_eq(str![""])
+        .stderr_eq(file!["stderr.term.svg"]);
 
     assert_ui().subset_matches(current_dir!().join("out"), &project_root);
 }

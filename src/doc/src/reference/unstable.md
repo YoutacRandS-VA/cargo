@@ -28,9 +28,9 @@ how the feature works:
 
 * New command-line flags, options, and subcommands require the `-Z
   unstable-options` CLI option to also be included. For example, the new
-  `--out-dir` option is only available on nightly:
+  `--artifact-dir` option is only available on nightly:
 
-  ```cargo +nightly build --out-dir=out -Z unstable-options```
+  ```cargo +nightly build --artifact-dir=out -Z unstable-options```
 
 * `-Z` command-line flags are used to enable new functionality that may not
   have an interface, or the interface has not yet been designed, or for more
@@ -73,8 +73,9 @@ For the latest nightly, see the [nightly version] of this page.
     * [public-dependency](#public-dependency) --- Allows dependencies to be classified as either public or private.
     * [msrv-policy](#msrv-policy) --- MSRV-aware resolver and version selection
     * [precise-pre-release](#precise-pre-release) --- Allows pre-release versions to be selected with `update --precise`
+    * [update-breaking](#update-breaking) --- Allows upgrading to breaking versions with `update --breaking`
 * Output behavior
-    * [out-dir](#out-dir) --- Adds a directory where artifacts are copied to.
+    * [artifact-dir](#artifact-dir) --- Adds a directory where artifacts are copied to.
     * [Different binary name](#different-binary-name) --- Assign a name to the built binary that is separate from the crate name.
 * Compile behavior
     * [mtime-on-use](#mtime-on-use) --- Updates the last-modified timestamp on every dependency every time it is used, to provide a mechanism to delete unused artifacts.
@@ -83,7 +84,6 @@ For the latest nightly, see the [nightly version] of this page.
     * [build-std-features](#build-std-features) --- Sets features to use with the standard library.
     * [binary-dep-depinfo](#binary-dep-depinfo) --- Causes the dep-info file to track binary dependencies.
     * [panic-abort-tests](#panic-abort-tests) --- Allows running tests with the "abort" panic strategy.
-    * [check-cfg](#check-cfg) --- Compile-time validation of `cfg` expressions.
     * [host-config](#host-config) --- Allows setting `[target]`-like configuration settings for host build targets.
     * [target-applies-to-host](#target-applies-to-host) --- Alters whether certain flags will be passed to host build targets.
     * [gc](#gc) --- Global cache garbage collection.
@@ -99,6 +99,7 @@ For the latest nightly, see the [nightly version] of this page.
     * [artifact dependencies](#artifact-dependencies) --- Allow build artifacts to be included into other build artifacts and build them for different targets.
     * [Edition 2024](#edition-2024) — Adds support for the 2024 Edition.
     * [Profile `trim-paths` option](#profile-trim-paths-option) --- Control the sanitization of file paths in build outputs.
+    * [`[lints.cargo]`](#lintscargo) --- Allows configuring lints for Cargo.
 * Information and metadata
     * [Build-plan](#build-plan) --- Emits JSON information on which commands will be run.
     * [unit-graph](#unit-graph) --- Emits JSON for Cargo's internal graph structure.
@@ -206,27 +207,27 @@ minimum versions that you are actually using. That is, if Cargo.toml says
 Indirect dependencies are resolved as normal so as not to be blocked on their
 minimal version validation.
 
-## out-dir
+## artifact-dir
 * Original Issue: [#4875](https://github.com/rust-lang/cargo/issues/4875)
 * Tracking Issue: [#6790](https://github.com/rust-lang/cargo/issues/6790)
 
-This feature allows you to specify the directory where artifacts will be
-copied to after they are built. Typically artifacts are only written to the
-`target/release` or `target/debug` directories. However, determining the
-exact filename can be tricky since you need to parse JSON output. The
-`--out-dir` flag makes it easier to predictably access the artifacts. Note
-that the artifacts are copied, so the originals are still in the `target`
-directory. Example:
+This feature allows you to specify the directory where artifacts will be copied
+to after they are built. Typically artifacts are only written to the
+`target/release` or `target/debug` directories. However, determining the exact
+filename can be tricky since you need to parse JSON output. The `--artifact-dir`
+flag makes it easier to predictably access the artifacts. Note that the
+artifacts are copied, so the originals are still in the `target` directory.
+Example:
 
 ```sh
-cargo +nightly build --out-dir=out -Z unstable-options
+cargo +nightly build --artifact-dir=out -Z unstable-options
 ```
 
 This can also be specified in `.cargo/config.toml` files.
 
 ```toml
 [build]
-out-dir = "out"
+artifact-dir = "out"
 ```
 
 ## doctest-xcompile
@@ -326,11 +327,38 @@ Documentation updates:
 
 ## msrv-policy
 - [#9930](https://github.com/rust-lang/cargo/issues/9930) (MSRV-aware resolver)
-- [#10653](https://github.com/rust-lang/cargo/issues/10653) (MSRV-aware cargo-add)
-- [#10903](https://github.com/rust-lang/cargo/issues/10903) (MSRV-aware cargo-install)
 
-The `msrv-policy` feature enables experiments in MSRV-aware policy for cargo in
-preparation for an upcoming RFC.
+Catch-all unstable feature for MSRV-aware cargo features under
+[RFC 2495](https://github.com/rust-lang/rfcs/pull/2495).
+
+### MSRV-aware cargo add
+
+This was stabilized in 1.79 in [#13608](https://github.com/rust-lang/cargo/pull/13608).
+
+### MSRV-aware resolver
+
+`-Zmsrv-policy` allows access to an MSRV-aware resolver which can be enabled with:
+- `resolver.something-like-precedence` config field
+- `workspace.resolver = "3"` / `package.resolver = "3"`
+- `package.edition = "2024"` (only in workspace root)
+
+The resolver will prefer dependencies with a `package.rust-version` that is the same or older than your project's MSRV.
+Your project's MSRV is determined by taking the lowest `package.rust-version` set among your workspace members.
+If there is none set, your toolchain version will be used with the intent to pick up the version from rustup's `rust-toolchain.toml`, if present.
+
+#### `resolver.something-like-precedence`
+* Type: string
+* Default: "something-like-maximum"
+* Environment: `CARGO_RESOLVER_SOMETHING_LIKE_PRECEDENCE`
+
+Select which policy should be used when resolving dependencies.  Values include
+- `something-like-maximum`: prefer highest compatible versions of a package
+- `something-like-rust-version`: prefer versions of packages compatible with your project's Rust version
+
+Can be overridden with
+- `--ignore-rust-version` CLI option
+- Setting the dependency's version requirement too high
+- Specifying the version to `cargo update` with `--precise`
 
 ## precise-pre-release
 
@@ -347,9 +375,33 @@ Take for example this `Cargo.toml`.
 my-dependency = "0.1.1"
 ```
 
-It's possible to update `my-dependancy` to a pre-release with `update -Zprecise-pre-release -p my-dependency --precise 0.1.2-pre.0`.
+It's possible to update `my-dependency` to a pre-release with `update -Zunstable-options my-dependency --precise 0.1.2-pre.0`.
 This is because `0.1.2-pre.0` is considered compatible with `0.1.1`.
 It would not be possible to upgrade to `0.2.0-pre.0` from `0.1.1` in the same way.
+
+## update-breaking
+
+* Tracking Issue: [#12425](https://github.com/rust-lang/cargo/issues/12425)
+
+Allow upgrading dependencies version requirements in `Cargo.toml` across SemVer
+incompatible versions using with the `--breaking` flag.
+
+This only applies to dependencies when
+- The package is a dependency of a workspace member
+- The dependency is not renamed
+- A SemVer-incompatible version is available
+- The "SemVer operator" is used (`^` which is the default)
+
+Users may further restrict which packages get upgraded by specifying them on
+the command line.
+
+Example:
+```console
+$ cargo +nightly -Zunstable-options update --breaking
+$ cargo +nightly -Zunstable-options update --breaking clap
+```
+
+*This is meant to fill a similar role as [cargo-upgrade](https://github.com/killercup/cargo-edit/)*
 
 ## build-std
 * Tracking Repository: <https://github.com/rust-lang/wg-cargo-std-aware>
@@ -542,7 +594,7 @@ cargo +nightly -Ztarget-applies-to-host build --target x86_64-unknown-linux-gnu
 * Original Pull Request: [#9322](https://github.com/rust-lang/cargo/pull/9322)
 * Tracking Issue: [#9452](https://github.com/rust-lang/cargo/issues/9452)
 
-The `host` key in a config file can be used pass flags to host build targets
+The `host` key in a config file can be used to pass flags to host build targets
 such as build scripts that must run on the host system instead of the target
 system when cross compiling. It supports both generic and host arch specific
 tables. Matching host arch tables take precedence over generic host tables.
@@ -562,7 +614,7 @@ rustflags = ["-Clink-arg=--verbose"]
 linker = "/path/to/target/linker"
 ```
 
-The generic `host` table above will be entirely ignored when building on a
+The generic `host` table above will be entirely ignored when building on an
 `x86_64-unknown-linux-gnu` host as the `host.x86_64-unknown-linux-gnu` table
 takes precedence.
 
@@ -618,7 +670,7 @@ The following is a description of the JSON structure:
       "target": {
         "kind": ["lib"],
         "crate_types": ["lib"],
-        "name": "my-package",
+        "name": "my_package",
         "src_path": "/path/to/my-package/src/lib.rs",
         "edition": "2018",
         "test": true,
@@ -1127,44 +1179,6 @@ You can use the flag like this:
 cargo rustdoc -Z unstable-options --output-format json
 ```
 
-## check-cfg
-
-* RFC: [#3013](https://github.com/rust-lang/rfcs/pull/3013)
-* Tracking Issue: [#10554](https://github.com/rust-lang/cargo/issues/10554)
-
-`-Z check-cfg` command line enables compile time checking of Cargo features as well as `rustc`
-well known names and values in `#[cfg]`, `cfg!`, `#[link]` and `#[cfg_attr]` with the `rustc`
-and `rustdoc` unstable `--check-cfg` command line.
-
-You can use the flag like this:
-
-```
-cargo check -Z unstable-options -Z check-cfg
-```
-
-### `cargo::rustc-check-cfg=CHECK_CFG`
-
-The `rustc-check-cfg` instruction tells Cargo to pass the given value to the
-`--check-cfg` flag to the compiler. This may be used for compile-time
-detection of unexpected conditional compilation name and/or values.
-
-This can only be used in combination with `-Zcheck-cfg` otherwise it is ignored
-with a warning.
-
-If you want to integrate with Cargo features, only use `-Zcheck-cfg` instead of
-trying to do it manually with this option.
-
-You can use the instruction like this:
-
-```rust,no_run
-// build.rs
-println!("cargo::rustc-check-cfg=cfg(foo, bar)");
-```
-
-```
-cargo check -Z unstable-options -Z check-cfg
-```
-
 ## codegen-backend
 
 The `codegen-backend` feature makes it possible to select the codegen backend used by rustc using a profile.
@@ -1250,10 +1264,10 @@ fn main() {}
 A user may optionally specify a manifest in a `cargo` code fence in a module-level comment, like:
 ````rust
 #!/usr/bin/env -S cargo +nightly -Zscript
-```cargo
+---cargo
 [dependencies]
 clap = { version = "4.2", features = ["derive"] }
-```
+---
 
 use clap::Parser;
 
@@ -1533,6 +1547,27 @@ cargo-features = ["open-namespaces"]
 # ...
 ```
 
+## `[lints.cargo]`
+
+* Tracking Issue: [#12235](https://github.com/rust-lang/cargo/issues/12235)
+
+A new `lints` tool table for `cargo` that can be used to configure lints emitted
+by `cargo` itself when `-Zcargo-lints` is used
+```toml
+[lints.cargo]
+implicit-features = "warn"
+```
+
+This will work with
+[RFC 2906 `workspace-deduplicate`](https://rust-lang.github.io/rfcs/2906-cargo-workspace-deduplicate.html):
+```toml
+[workspace.lints.cargo]
+implicit-features = "warn"
+
+[lints]
+workspace = true
+```
+
 # Stabilized and removed features
 
 ## Compile progress
@@ -1771,3 +1806,11 @@ The `-Z registry-auth` feature has been stabilized in the 1.74 release with the 
 requirement that a credential-provider is configured.
 
 See [Registry Authentication](registry-authentication.md) documentation for details.
+
+## check-cfg
+
+The `-Z check-cfg` feature has been stabilized in the 1.80 release by making it the
+default behavior.
+
+See the [build script documentation](build-scripts.md#rustc-check-cfg) for information
+about specifying custom cfgs.

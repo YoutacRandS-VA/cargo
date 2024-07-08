@@ -141,7 +141,7 @@ impl<'gctx> InstallablePackage<'gctx> {
                 select_pkg(
                     &mut src,
                     dep,
-                    |path: &mut PathSource<'_>| path.read_packages(),
+                    |path: &mut PathSource<'_>| path.root_package().map(|p| vec![p]),
                     gctx,
                     current_rust_version,
                 )?
@@ -561,7 +561,8 @@ impl<'gctx> InstallablePackage<'gctx> {
         // It would be best if `source` could be passed in here to avoid a
         // duplicate "Updating", but since `source` is taken by value, then it
         // wouldn't be available for `compile_ws`.
-        let (pkg_set, resolve) = ops::resolve_ws(&self.ws)?;
+        let dry_run = false;
+        let (pkg_set, resolve) = ops::resolve_ws(&self.ws, dry_run)?;
         ops::check_yanked(
             self.ws.gctx(),
             &pkg_set,
@@ -624,7 +625,7 @@ pub fn install(
     let dst = root.join("bin").into_path_unlocked();
     let map = SourceConfigMap::new(gctx)?;
 
-    let current_rust_version = if opts.honor_rust_version {
+    let current_rust_version = if opts.honor_rust_version.unwrap_or(true) {
         let rustc = gctx.load_global_rustc(None)?;
         Some(rustc.version.clone().into())
     } else {
@@ -819,7 +820,9 @@ fn make_ws_rustc_target<'gctx>(
     let mut ws = if source_id.is_git() || source_id.is_path() {
         Workspace::new(pkg.manifest_path(), gctx)?
     } else {
-        Workspace::ephemeral(pkg, gctx, None, false)?
+        let mut ws = Workspace::ephemeral(pkg, gctx, None, false)?;
+        ws.set_resolve_honors_rust_version(Some(false));
+        ws
     };
     ws.set_ignore_lock(gctx.lock_update_allowed());
     ws.set_require_optional_deps(false);

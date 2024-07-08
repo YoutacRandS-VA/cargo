@@ -37,13 +37,15 @@ system:
   Useful to set up a build cache tool such as `sccache`. See
   [`build.rustc-wrapper`] to set via config. Setting this to the empty string
   overwrites the config and resets cargo to not use a wrapper.
-* `RUSTC_WORKSPACE_WRAPPER` --- Instead of simply running `rustc`, for workspace
-  members Cargo will execute this specified wrapper, passing
-  as its command-line arguments the rustc invocation, with the first argument
-  being the path to the actual rustc. It affects the filename hash
-  so that artifacts produced by the wrapper are cached separately.
-  See [`build.rustc-workspace-wrapper`] to set via config. Setting this to the empty string
-  overwrites the config and resets cargo to not use a wrapper for workspace members.
+* `RUSTC_WORKSPACE_WRAPPER` --- Instead of simply running `rustc`, for workspace members Cargo will
+  execute this specified wrapper, passing as its command-line arguments the rustc invocation, with
+  the first argument being the path to the actual rustc. When building a single-package project
+  without workspaces, that package is considered to be the workspace. It affects the filename hash
+  so that artifacts produced by the wrapper are cached separately. See
+  [`build.rustc-workspace-wrapper`] to set via config. Setting this to the empty string overwrites
+  the config and resets cargo to not use a wrapper for workspace members. If both `RUSTC_WRAPPER`
+  and `RUSTC_WORKSPACE_WRAPPER` are set, then they will be nested: the final invocation is
+  `$RUSTC_WRAPPER $RUSTC_WORKSPACE_WRAPPER $RUSTC`.
 * `RUSTDOC` --- Instead of running `rustdoc`, Cargo will execute this specified
   `rustdoc` instance instead. See [`build.rustdoc`] to set via config.
 * `RUSTDOCFLAGS` --- A space-separated list of custom flags to pass to all `rustdoc`
@@ -244,9 +246,9 @@ corresponding environment variable is set to the empty string, `""`.
 * `CARGO_BIN_NAME` --- The name of the binary that is currently being compiled.
   Only set for [binaries] or binary [examples]. This name does not include any
   file extension, such as `.exe`.
-* `OUT_DIR` --- If the package has a build script, this is set to the folder where the build
-              script should place its output. See below for more information.
-              (Only set during compilation.)
+* `OUT_DIR` --- If the package has a build script, this is set to the folder
+  where the build script should place its output. See below for more information.
+  (Only set during compilation.)
 * `CARGO_BIN_EXE_<name>` --- The absolute path to a binary target's executable.
   This is only set when building an [integration test] or benchmark. This may
   be used with the [`env` macro] to find the executable to run for testing
@@ -297,7 +299,7 @@ Cargo includes the following paths:
   Cargo to properly set the environment if additional libraries on the system
   are needed in the search path.
 * The base output directory, such as `target/debug`, and the "deps" directory.
-  This is mostly for legacy support of `rustc` compiler plugins.
+  This is mostly for support of proc-macros.
 * The rustc sysroot library path. This generally is not important to most
   users.
 
@@ -316,24 +318,19 @@ let out_dir = env::var("OUT_DIR").unwrap();
 
 * `CARGO` --- Path to the `cargo` binary performing the build.
 * `CARGO_MANIFEST_DIR` --- The directory containing the manifest for the package
-                         being built (the package containing the build
-                         script). Also note that this is the value of the
-                         current working directory of the build script when it
-                         starts.
+  being built (the package containing the build script). Also note that this is
+  the value of the current working directory of the build script when it starts.
 * `CARGO_MANIFEST_LINKS` --- the manifest `links` value.
 * `CARGO_MAKEFLAGS` --- Contains parameters needed for Cargo's [jobserver]
-                      implementation to parallelize subprocesses.
-                      Rustc or cargo invocations from build.rs can already
-                      read `CARGO_MAKEFLAGS`, but GNU Make requires the
-                      flags to be specified either directly as arguments,
-                      or through the `MAKEFLAGS` environment variable.
-                      Currently Cargo doesn't set the `MAKEFLAGS` variable,
-                      but it's free for build scripts invoking GNU Make
-                      to set it to the contents of `CARGO_MAKEFLAGS`.
-* `CARGO_FEATURE_<name>` --- For each activated feature of the package being
-                           built, this environment variable will be present
-                           where `<name>` is the name of the feature uppercased
-                           and having `-` translated to `_`.
+  implementation to parallelize subprocesses. Rustc or cargo invocations from
+  build.rs can already read `CARGO_MAKEFLAGS`, but GNU Make requires the flags
+  to be specified either directly as arguments, or through the `MAKEFLAGS`
+  environment variable. Currently Cargo doesn't set the `MAKEFLAGS` variable,
+  but it's free for build scripts invoking GNU Make to set it to the contents
+  of `CARGO_MAKEFLAGS`.
+* `CARGO_FEATURE_<name>` --- For each activated feature of the package being built,
+  this environment variable will be present where `<name>` is the name of the
+  feature uppercased and having `-` translated to `_`.
 * `CARGO_CFG_<cfg>` --- For each [configuration option][configuration] of the
   package being built, this environment variable will contain the value of the
   configuration, where `<cfg>` is the name of the configuration uppercased and
@@ -345,53 +342,47 @@ let out_dir = env::var("OUT_DIR").unwrap();
   those defined in `RUSTFLAGS`). Some examples of what these variables are:
     * `CARGO_CFG_UNIX` --- Set on [unix-like platforms].
     * `CARGO_CFG_WINDOWS` --- Set on [windows-like platforms].
-    * `CARGO_CFG_TARGET_FAMILY=unix` --- The [target family].
+    * `CARGO_CFG_TARGET_FAMILY=unix,wasm` --- The [target family].
     * `CARGO_CFG_TARGET_OS=macos` --- The [target operating system].
     * `CARGO_CFG_TARGET_ARCH=x86_64` --- The CPU [target architecture].
     * `CARGO_CFG_TARGET_VENDOR=apple` --- The [target vendor].
     * `CARGO_CFG_TARGET_ENV=gnu` --- The [target environment] ABI.
+    * `CARGO_CFG_TARGET_ABI=sim` --- The [target ABI].
     * `CARGO_CFG_TARGET_POINTER_WIDTH=64` --- The CPU [pointer width].
     * `CARGO_CFG_TARGET_ENDIAN=little` --- The CPU [target endianness].
     * `CARGO_CFG_TARGET_FEATURE=mmx,sse` --- List of CPU [target features] enabled.
   > Note that different [target triples][Target Triple] have different sets of `cfg` values,
   > hence variables present in one target triple might not be available in the other.
 * `OUT_DIR` --- the folder in which all output and intermediate artifacts should
-              be placed. This folder is inside the build directory for the
-              package being built, and it is unique for the package in question.
+  be placed. This folder is inside the build directory for the package being built,
+  and it is unique for the package in question.
 * `TARGET` --- the target triple that is being compiled for. Native code should be
-             compiled for this triple. See the [Target Triple] description
-             for more information.
+  compiled for this triple. See the [Target Triple] description for more information.
 * `HOST` --- the host triple of the Rust compiler.
 * `NUM_JOBS` --- the parallelism specified as the top-level parallelism. This can
-               be useful to pass a `-j` parameter to a system like `make`. Note
-               that care should be taken when interpreting this environment
-               variable. For historical purposes this is still provided but
-               recent versions of Cargo, for example, do not need to run `make
-               -j`, and instead can set the `MAKEFLAGS` env var to the content
-               of `CARGO_MAKEFLAGS` to activate the use of Cargo's GNU Make
-               compatible [jobserver] for sub-make invocations.
-* `OPT_LEVEL`, `DEBUG` --- values of the corresponding variables for the
-                         profile currently being built.
+  be useful to pass a `-j` parameter to a system like `make`. Note that care
+  should be taken when interpreting this environment variable. For historical
+  purposes this is still provided but recent versions of Cargo, for example, do
+  not need to run `make -j`, and instead can set the `MAKEFLAGS` env var to the
+  content of `CARGO_MAKEFLAGS` to activate the use of Cargo's GNU Make compatible
+  [jobserver] for sub-make invocations.
+* `OPT_LEVEL`, `DEBUG` --- values of the corresponding variables for the profile currently being built.
 * `PROFILE` --- `release` for release builds, `debug` for other builds. This is
   determined based on if the [profile] inherits from the [`dev`] or
   [`release`] profile. Using this environment variable is not recommended.
   Using other environment variables like `OPT_LEVEL` provide a more correct
   view of the actual settings being used.
-* `DEP_<name>_<key>` --- For more information about this set of environment
-                       variables, see build script documentation about [`links`][links].
+* `DEP_<name>_<key>` --- For more information about this set of environment variables,
+  see build script documentation about [`links`][links].
 * `RUSTC`, `RUSTDOC` --- the compiler and documentation generator that Cargo has
-                       resolved to use, passed to the build script so it might
-                       use it as well.
-* `RUSTC_WRAPPER` --- the `rustc` wrapper, if any, that Cargo is using.
-                    See [`build.rustc-wrapper`].
-* `RUSTC_WORKSPACE_WRAPPER` --- the `rustc` wrapper, if any, that Cargo is
-			      using for workspace members. See
-			      [`build.rustc-workspace-wrapper`].
+  resolved to use, passed to the build script so it might use it as well.
+* `RUSTC_WRAPPER` --- the `rustc` wrapper, if any, that Cargo is using. See [`build.rustc-wrapper`].
+* `RUSTC_WORKSPACE_WRAPPER` --- the `rustc` wrapper, if any, that Cargo is using
+  for workspace members. See [`build.rustc-workspace-wrapper`].
 * `RUSTC_LINKER` --- The path to the linker binary that Cargo has resolved to use
-                   for the current target, if specified. The linker can be
-                   changed by editing `.cargo/config.toml`; see the documentation
-                   about [cargo configuration][cargo-config] for more
-                   information.
+  for the current target, if specified. The linker can be changed by editing
+  `.cargo/config.toml`; see the documentation about [cargo configuration][cargo-config]
+  for more information.
 * `CARGO_ENCODED_RUSTFLAGS` --- extra flags that Cargo invokes `rustc` with,
   separated by a `0x1f` character (ASCII Unit Separator). See
   [`build.rustflags`]. Note that since Rust 1.55, `RUSTFLAGS` is removed from
@@ -407,6 +398,7 @@ let out_dir = env::var("OUT_DIR").unwrap();
 [target architecture]: ../../reference/conditional-compilation.html#target_arch
 [target vendor]: ../../reference/conditional-compilation.html#target_vendor
 [target environment]: ../../reference/conditional-compilation.html#target_env
+[target ABI]: ../../reference/conditional-compilation.html#target_abi
 [pointer width]: ../../reference/conditional-compilation.html#target_pointer_width
 [target endianness]: ../../reference/conditional-compilation.html#target_endian
 [target features]: ../../reference/conditional-compilation.html#target_feature
@@ -426,5 +418,8 @@ Cargo exposes this environment variable to 3rd party subcommands
 (ie. programs named `cargo-foobar` placed in `$PATH`):
 
 * `CARGO` --- Path to the `cargo` binary performing the build.
+* `CARGO_MAKEFLAGS` --- Contains parameters needed for Cargo's [jobserver]
+  implementation to parallelize subprocesses.
+  This is set only when Cargo detects the existence of a jobserver.
 
 For extended information about your environment you may run `cargo metadata`.

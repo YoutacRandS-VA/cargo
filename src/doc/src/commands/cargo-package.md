@@ -26,8 +26,8 @@ steps:
       executable binary or example target. [cargo-install(1)](cargo-install.html) will use the
       packaged lock file if the `--locked` flag is used.
     - A `.cargo_vcs_info.json` file is included that contains information
-      about the current VCS checkout hash if available (not included with
-      `--allow-dirty`).
+      about the current VCS checkout hash if available, as well as a flag if the
+      worktree is dirty.
 3. Extract the `.crate` file and build it to verify it can build.
     - This will rebuild your package from scratch to ensure that it can be
       built from a pristine state. The `--no-verify` flag can be used to skip
@@ -47,14 +47,25 @@ Will generate a `.cargo_vcs_info.json` in the following format
 ```javascript
 {
  "git": {
-   "sha1": "aac20b6e7e543e6dd4118b246c77225e3a3a1302"
+   "sha1": "aac20b6e7e543e6dd4118b246c77225e3a3a1302",
+   "dirty": true
  },
  "path_in_vcs": ""
 }
 ```
 
+`dirty` indicates that the Git worktree was dirty when the package
+was built.
+
 `path_in_vcs` will be set to a repo-relative path for packages
 in subdirectories of the version control repository.
+
+The compatibility of this file is maintained under the same policy
+as the JSON output of [cargo-metadata(1)](cargo-metadata.html).
+
+Note that this file provides a best-effort snapshot of the VCS information.
+However, the provenance of the package is not verified.
+There is no guarantee that the source code in the tarball matches the VCS information.
 
 ## OPTIONS
 
@@ -182,15 +193,16 @@ be specified multiple times, which enables all specified features.</dd>
 <code>Cargo.toml</code> file in the current directory or any parent directory.</dd>
 
 
-<dt class="option-term" id="option-cargo-package---frozen"><a class="option-anchor" href="#option-cargo-package---frozen"></a><code>--frozen</code></dt>
 <dt class="option-term" id="option-cargo-package---locked"><a class="option-anchor" href="#option-cargo-package---locked"></a><code>--locked</code></dt>
-<dd class="option-desc">Either of these flags requires that the <code>Cargo.lock</code> file be
-up-to-date. If the lock file is missing, or it needs to be updated, Cargo will
-exit with an error. The <code>--frozen</code> flag also prevents Cargo from
-attempting to access the network to determine if it is out-of-date.</p>
-<p>These may be used in environments where you want to assert that the
-<code>Cargo.lock</code> file is up-to-date (such as a CI build) or want to avoid network
-access.</dd>
+<dd class="option-desc">Asserts that the exact same dependencies and versions are used as when the
+existing <code>Cargo.lock</code> file was originally generated. Cargo will exit with an
+error when either of the following scenarios arises:</p>
+<ul>
+<li>The lock file is missing.</li>
+<li>Cargo attempted to change the lock file due to a different dependency resolution.</li>
+</ul>
+<p>It may be used in environments where deterministic builds are desired,
+such as in CI pipelines.</dd>
 
 
 <dt class="option-term" id="option-cargo-package---offline"><a class="option-anchor" href="#option-cargo-package---offline"></a><code>--offline</code></dt>
@@ -204,6 +216,10 @@ if there might be a newer version as indicated in the local copy of the index.
 See the <a href="cargo-fetch.html">cargo-fetch(1)</a> command to download dependencies before going
 offline.</p>
 <p>May also be specified with the <code>net.offline</code> <a href="../reference/config.html">config value</a>.</dd>
+
+
+<dt class="option-term" id="option-cargo-package---frozen"><a class="option-anchor" href="#option-cargo-package---frozen"></a><code>--frozen</code></dt>
+<dd class="option-desc">Equivalent to specifying both <code>--locked</code> and <code>--offline</code>.</dd>
 
 
 </dl>

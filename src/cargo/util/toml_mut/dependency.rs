@@ -4,12 +4,14 @@ use std::fmt::{Display, Formatter};
 use std::path::{Path, PathBuf};
 
 use indexmap::IndexSet;
+use itertools::Itertools;
 use toml_edit::KeyMut;
 
 use super::manifest::str_or_1_len_table;
 use crate::core::GitReference;
 use crate::core::SourceId;
 use crate::core::Summary;
+use crate::util::toml_mut::is_sorted;
 use crate::CargoResult;
 use crate::GlobalContext;
 
@@ -474,9 +476,18 @@ impl Dependency {
         item: &mut toml_edit::Item,
     ) {
         if str_or_1_len_table(item) {
-            // Nothing to preserve
-            *item = self.to_toml(crate_root);
-            key.fmt();
+            // Little to preserve
+            let mut new_item = self.to_toml(crate_root);
+            match (&item, &mut new_item) {
+                (toml_edit::Item::Value(old), toml_edit::Item::Value(new)) => {
+                    *new.decor_mut() = old.decor().clone();
+                }
+                (toml_edit::Item::Table(old), toml_edit::Item::Table(new)) => {
+                    *new.decor_mut() = old.decor().clone();
+                }
+                (_, _) => {}
+            }
+            *item = new_item;
         } else if let Some(table) = item.as_table_like_mut() {
             match &self.source {
                 Some(Source::Registry(src)) => {
@@ -579,8 +590,13 @@ impl Dependency {
                             .collect::<Option<IndexSet<_>>>()
                     })
                     .unwrap_or_default();
+                let is_already_sorted = is_sorted(features.iter());
                 features.extend(new_features.iter().map(|s| s.as_str()));
-                let features = features.into_iter().collect::<toml_edit::Value>();
+                let features = if is_already_sorted {
+                    features.into_iter().sorted().collect::<toml_edit::Value>()
+                } else {
+                    features.into_iter().collect::<toml_edit::Value>()
+                };
                 table.set_dotted(false);
                 overwrite_value(table, "features", features);
             } else {

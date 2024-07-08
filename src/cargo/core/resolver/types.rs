@@ -111,6 +111,8 @@ pub enum ResolveBehavior {
     V1,
     /// V2 adds the new feature resolver.
     V2,
+    /// V3 changes version preferences
+    V3,
 }
 
 impl ResolveBehavior {
@@ -118,6 +120,7 @@ impl ResolveBehavior {
         match resolver {
             "1" => Ok(ResolveBehavior::V1),
             "2" => Ok(ResolveBehavior::V2),
+            "3" => Ok(ResolveBehavior::V3),
             s => anyhow::bail!(
                 "`resolver` setting `{}` is not valid, valid options are \"1\" or \"2\"",
                 s
@@ -129,6 +132,7 @@ impl ResolveBehavior {
         match self {
             ResolveBehavior::V1 => "1",
             ResolveBehavior::V2 => "2",
+            ResolveBehavior::V3 => "3",
         }
         .to_owned()
     }
@@ -296,12 +300,6 @@ pub enum ConflictReason {
     /// A dependency listed a feature for an optional dependency, but that
     /// optional dependency is "hidden" using namespaced `dep:` syntax.
     NonImplicitDependencyAsFeature(InternedString),
-
-    // TODO: needs more info for `activation_error`
-    // TODO: needs more info for `find_candidate`
-    /// pub dep error
-    PublicDependency(PackageId),
-    PubliclyExports(PackageId),
 }
 
 impl ConflictReason {
@@ -315,13 +313,6 @@ impl ConflictReason {
 
     pub fn is_required_dependency_as_features(&self) -> bool {
         matches!(self, ConflictReason::RequiredDependencyAsFeature(_))
-    }
-
-    pub fn is_public_dependency(&self) -> bool {
-        matches!(
-            self,
-            ConflictReason::PublicDependency(_) | ConflictReason::PubliclyExports(_)
-        )
     }
 }
 

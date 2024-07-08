@@ -45,19 +45,23 @@ use std::{env, fs, str};
 
 use anyhow::{bail, Context as _};
 use cargo_util::{exit_status_to_string, is_simple_exit_code, paths, ProcessBuilder};
+use cargo_util_schemas::manifest::TomlManifest;
 use rustfix::diagnostics::Diagnostic;
 use rustfix::CodeFix;
 use semver::Version;
 use tracing::{debug, trace, warn};
 
+use crate::core::compiler::CompileKind;
 use crate::core::compiler::RustcTargetData;
 use crate::core::resolver::features::{DiffMap, FeatureOpts, FeatureResolver, FeaturesFor};
 use crate::core::resolver::{HasDevUnits, Resolve, ResolveBehavior};
-use crate::core::{Edition, MaybePackage, PackageId, Workspace};
+use crate::core::{Edition, MaybePackage, Package, PackageId, Workspace};
+use crate::core::{FeatureValue, PackageIdSpecQuery as _};
 use crate::ops::resolve::WorkspaceResolve;
 use crate::ops::{self, CompileOptions};
 use crate::util::diagnostic_server::{Message, RustfixDiagnosticServer};
 use crate::util::errors::CargoResult;
+use crate::util::interning::InternedString;
 use crate::util::GlobalContext;
 use crate::util::{existing_vcs_repo, LockServer, LockServerClient};
 use crate::{drop_eprint, drop_eprintln};
@@ -76,6 +80,14 @@ const EDITION_ENV_INTERNAL: &str = "__CARGO_FIX_EDITION";
 /// **Internal only.**
 /// For passing [`FixOptions::idioms`] through to cargo running in proxy mode.
 const IDIOMS_ENV_INTERNAL: &str = "__CARGO_FIX_IDIOMS";
+/// **Internal only.**
+/// The sysroot path.
+///
+/// This is for preventing `cargo fix` from fixing rust std/core libs. See
+///
+/// * <https://github.com/rust-lang/cargo/issues/9857>
+/// * <https://github.com/rust-lang/rust/issues/88514#issuecomment-2043469384>
+const SYSROOT_INTERNAL: &str = "__CARGO_FIX_RUST_SRC";
 
 pub struct FixOptions {
     pub edition: bool,
@@ -87,11 +99,28 @@ pub struct FixOptions {
     pub broken_code: bool,
 }
 
-pub fn fix(ws: &Workspace<'_>, opts: &mut FixOptions) -> CargoResult<()> {
-    check_version_control(ws.gctx(), opts)?;
+pub fn fix(
+    gctx: &GlobalContext,
+    original_ws: &Workspace<'_>,
+    root_manifest: &Path,
+    opts: &mut FixOptions,
+) -> CargoResult<()> {
+    check_version_control(gctx, opts)?;
+
+    let mut target_data =
+        RustcTargetData::new(original_ws, &opts.compile_opts.build_config.requested_kinds)?;
     if opts.edition {
-        check_resolver_change(ws, opts)?;
+        let specs = opts.compile_opts.spec.to_package_id_specs(&original_ws)?;
+        let members: Vec<&Package> = original_ws
+            .members()
+            .filter(|m| specs.iter().any(|spec| spec.matches(m.package_id())))
+            .collect();
+        migrate_manifests(original_ws, &members)?;
+
+        check_resolver_change(&original_ws, &mut target_data, opts)?;
     }
+    let mut ws = Workspace::new(&root_manifest, gctx)?;
+    ws.set_resolve_honors_rust_version(Some(original_ws.resolve_honors_rust_version()));
 
     // Spin up our lock server, which our subprocesses will use to synchronize fixes.
     let lock_server = LockServer::new()?;
@@ -112,6 +141,11 @@ pub fn fix(ws: &Workspace<'_>, opts: &mut FixOptions) -> CargoResult<()> {
         wrapper.env(IDIOMS_ENV_INTERNAL, "1");
     }
 
+    let sysroot = &target_data.info(CompileKind::Host).sysroot;
+    if sysroot.is_dir() {
+        wrapper.env(SYSROOT_INTERNAL, sysroot);
+    }
+
     *opts
         .compile_opts
         .build_config
@@ -128,7 +162,7 @@ pub fn fix(ws: &Workspace<'_>, opts: &mut FixOptions) -> CargoResult<()> {
         server.configure(&mut wrapper);
     }
 
-    let rustc = ws.gctx().load_global_rustc(Some(ws))?;
+    let rustc = ws.gctx().load_global_rustc(Some(&ws))?;
     wrapper.arg(&rustc.path);
     // This is calling rustc in cargo fix-proxy-mode, so it also need to retry.
     // The argfile handling are located at `FixArgs::from_args`.
@@ -138,7 +172,7 @@ pub fn fix(ws: &Workspace<'_>, opts: &mut FixOptions) -> CargoResult<()> {
     // repeating build until there are no more changes to be applied
     opts.compile_opts.build_config.primary_unit_rustc = Some(wrapper);
 
-    ops::compile(ws, &opts.compile_opts)?;
+    ops::compile(&ws, &opts.compile_opts)?;
     Ok(())
 }
 
@@ -215,7 +249,270 @@ fn check_version_control(gctx: &GlobalContext, opts: &FixOptions) -> CargoResult
     );
 }
 
-fn check_resolver_change(ws: &Workspace<'_>, opts: &FixOptions) -> CargoResult<()> {
+fn migrate_manifests(ws: &Workspace<'_>, pkgs: &[&Package]) -> CargoResult<()> {
+    for pkg in pkgs {
+        let existing_edition = pkg.manifest().edition();
+        let prepare_for_edition = existing_edition.saturating_next();
+        if existing_edition == prepare_for_edition
+            || (!prepare_for_edition.is_stable() && !ws.gctx().nightly_features_allowed)
+        {
+            continue;
+        }
+        let file = pkg.manifest_path();
+        let file = file.strip_prefix(ws.root()).unwrap_or(file);
+        let file = file.display();
+        ws.gctx().shell().status(
+            "Migrating",
+            format!("{file} from {existing_edition} edition to {prepare_for_edition}"),
+        )?;
+
+        let ws_original_toml = match ws.root_maybe() {
+            MaybePackage::Package(package) => package.manifest().original_toml(),
+            MaybePackage::Virtual(manifest) => manifest.original_toml(),
+        };
+        if Edition::Edition2024 <= prepare_for_edition {
+            let mut document = pkg.manifest().document().clone().into_mut();
+            let mut fixes = 0;
+
+            let root = document.as_table_mut();
+
+            if let Some(workspace) = root
+                .get_mut("workspace")
+                .and_then(|t| t.as_table_like_mut())
+            {
+                // strictly speaking, the edition doesn't apply to this table but it should be safe
+                // enough
+                fixes += rename_dep_fields_2024(workspace, "dependencies");
+            }
+
+            fixes += add_feature_for_unused_deps(pkg, root, ws.gctx());
+            fixes += rename_table(root, "project", "package");
+            if let Some(target) = root.get_mut("lib").and_then(|t| t.as_table_like_mut()) {
+                fixes += rename_target_fields_2024(target);
+            }
+            fixes += rename_array_of_target_fields_2024(root, "bin");
+            fixes += rename_array_of_target_fields_2024(root, "example");
+            fixes += rename_array_of_target_fields_2024(root, "test");
+            fixes += rename_array_of_target_fields_2024(root, "bench");
+            fixes += rename_dep_fields_2024(root, "dependencies");
+            fixes += remove_ignored_default_features_2024(root, "dependencies", ws_original_toml);
+            fixes += rename_table(root, "dev_dependencies", "dev-dependencies");
+            fixes += rename_dep_fields_2024(root, "dev-dependencies");
+            fixes +=
+                remove_ignored_default_features_2024(root, "dev-dependencies", ws_original_toml);
+            fixes += rename_table(root, "build_dependencies", "build-dependencies");
+            fixes += rename_dep_fields_2024(root, "build-dependencies");
+            fixes +=
+                remove_ignored_default_features_2024(root, "build-dependencies", ws_original_toml);
+            for target in root
+                .get_mut("target")
+                .and_then(|t| t.as_table_like_mut())
+                .iter_mut()
+                .flat_map(|t| t.iter_mut())
+                .filter_map(|(_k, t)| t.as_table_like_mut())
+            {
+                fixes += rename_dep_fields_2024(target, "dependencies");
+                fixes +=
+                    remove_ignored_default_features_2024(target, "dependencies", ws_original_toml);
+                fixes += rename_table(target, "dev_dependencies", "dev-dependencies");
+                fixes += rename_dep_fields_2024(target, "dev-dependencies");
+                fixes += remove_ignored_default_features_2024(
+                    target,
+                    "dev-dependencies",
+                    ws_original_toml,
+                );
+                fixes += rename_table(target, "build_dependencies", "build-dependencies");
+                fixes += rename_dep_fields_2024(target, "build-dependencies");
+                fixes += remove_ignored_default_features_2024(
+                    target,
+                    "build-dependencies",
+                    ws_original_toml,
+                );
+            }
+
+            if 0 < fixes {
+                let verb = if fixes == 1 { "fix" } else { "fixes" };
+                let msg = format!("{file} ({fixes} {verb})");
+                ws.gctx().shell().status("Fixed", msg)?;
+
+                let s = document.to_string();
+                let new_contents_bytes = s.as_bytes();
+                cargo_util::paths::write_atomic(pkg.manifest_path(), new_contents_bytes)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn rename_dep_fields_2024(parent: &mut dyn toml_edit::TableLike, dep_kind: &str) -> usize {
+    let mut fixes = 0;
+    for target in parent
+        .get_mut(dep_kind)
+        .and_then(|t| t.as_table_like_mut())
+        .iter_mut()
+        .flat_map(|t| t.iter_mut())
+        .filter_map(|(_k, t)| t.as_table_like_mut())
+    {
+        fixes += rename_table(target, "default_features", "default-features");
+    }
+    fixes
+}
+
+fn remove_ignored_default_features_2024(
+    parent: &mut dyn toml_edit::TableLike,
+    dep_kind: &str,
+    ws_original_toml: &TomlManifest,
+) -> usize {
+    let mut fixes = 0;
+    for (name_in_toml, target) in parent
+        .get_mut(dep_kind)
+        .and_then(|t| t.as_table_like_mut())
+        .iter_mut()
+        .flat_map(|t| t.iter_mut())
+        .filter_map(|(k, t)| t.as_table_like_mut().map(|t| (k, t)))
+    {
+        let name_in_toml: &str = &name_in_toml;
+        let ws_deps = ws_original_toml
+            .workspace
+            .as_ref()
+            .and_then(|ws| ws.dependencies.as_ref());
+        if let Some(ws_dep) = ws_deps.and_then(|ws_deps| ws_deps.get(name_in_toml)) {
+            if ws_dep.default_features() == Some(false) {
+                continue;
+            }
+        }
+        if target
+            .get("workspace")
+            .and_then(|i| i.as_value())
+            .and_then(|i| i.as_bool())
+            == Some(true)
+            && target
+                .get("default-features")
+                .and_then(|i| i.as_value())
+                .and_then(|i| i.as_bool())
+                == Some(false)
+        {
+            target.remove("default-features");
+            fixes += 1;
+        }
+    }
+    fixes
+}
+
+fn rename_array_of_target_fields_2024(root: &mut dyn toml_edit::TableLike, kind: &str) -> usize {
+    let mut fixes = 0;
+    for target in root
+        .get_mut(kind)
+        .and_then(|t| t.as_array_of_tables_mut())
+        .iter_mut()
+        .flat_map(|t| t.iter_mut())
+    {
+        fixes += rename_target_fields_2024(target);
+    }
+    fixes
+}
+
+fn rename_target_fields_2024(target: &mut dyn toml_edit::TableLike) -> usize {
+    let mut fixes = 0;
+    fixes += rename_table(target, "crate_type", "crate-type");
+    fixes += rename_table(target, "proc_macro", "proc-macro");
+    fixes
+}
+
+fn rename_table(parent: &mut dyn toml_edit::TableLike, old: &str, new: &str) -> usize {
+    let Some(old_key) = parent.key(old).cloned() else {
+        return 0;
+    };
+
+    let project = parent.remove(old).expect("returned early");
+    if !parent.contains_key(new) {
+        parent.insert(new, project);
+        let mut new_key = parent.key_mut(new).expect("just inserted");
+        *new_key.dotted_decor_mut() = old_key.dotted_decor().clone();
+        *new_key.leaf_decor_mut() = old_key.leaf_decor().clone();
+    }
+    1
+}
+
+fn add_feature_for_unused_deps(
+    pkg: &Package,
+    parent: &mut dyn toml_edit::TableLike,
+    gctx: &GlobalContext,
+) -> usize {
+    let manifest = pkg.manifest();
+
+    let activated_opt_deps = manifest
+        .resolved_toml()
+        .features()
+        .map(|map| {
+            map.values()
+                .flatten()
+                .filter_map(|f| match FeatureValue::new(InternedString::new(f)) {
+                    FeatureValue::Dep { dep_name } => Some(dep_name.as_str()),
+                    _ => None,
+                })
+                .collect::<HashSet<_>>()
+        })
+        .unwrap_or_default();
+
+    let mut fixes = 0;
+    for dep in manifest.dependencies() {
+        let dep_name_in_toml = dep.name_in_toml();
+        if dep.is_optional() && !activated_opt_deps.contains(dep_name_in_toml.as_str()) {
+            if let Some(features) = parent
+                .entry("features")
+                .or_insert(toml_edit::table())
+                .as_table_like_mut()
+            {
+                let activate_dep = format!("dep:{dep_name_in_toml}");
+                let strong_dep_feature_prefix = format!("{dep_name_in_toml}/");
+                features
+                    .entry(dep_name_in_toml.as_str())
+                    .or_insert_with(|| {
+                        fixes += 1;
+                        toml_edit::Item::Value(toml_edit::Value::Array(
+                            toml_edit::Array::from_iter([&activate_dep]),
+                        ))
+                    });
+                // Ensure `dep:dep_name` is present for `dep_name/feature_name` since `dep:` is the
+                // only way to guarantee an optional dependency is available for use.
+                //
+                // The way we avoid implicitly creating features in Edition2024 is we remove the
+                // dependency from `resolved_toml` if there is no `dep:` syntax as that is the only
+                // syntax that suppresses the creation of the implicit feature.
+                for (feature_name, activations) in features.iter_mut() {
+                    let Some(activations) = activations.as_array_mut() else {
+                        let _ = gctx.shell().warn(format_args!("skipping fix of feature `{feature_name}` in package `{}`: unsupported feature schema", pkg.name()));
+                        continue;
+                    };
+                    if activations
+                        .iter()
+                        .any(|a| a.as_str().map(|a| a == activate_dep).unwrap_or(false))
+                    {
+                        continue;
+                    }
+                    let Some(activate_dep_pos) = activations.iter().position(|a| {
+                        a.as_str()
+                            .map(|a| a.starts_with(&strong_dep_feature_prefix))
+                            .unwrap_or(false)
+                    }) else {
+                        continue;
+                    };
+                    fixes += 1;
+                    activations.insert(activate_dep_pos, &activate_dep);
+                }
+            }
+        }
+    }
+    fixes
+}
+
+fn check_resolver_change<'gctx>(
+    ws: &Workspace<'gctx>,
+    target_data: &mut RustcTargetData<'gctx>,
+    opts: &FixOptions,
+) -> CargoResult<()> {
     let root = ws.root_maybe();
     match root {
         MaybePackage::Package(root_pkg) => {
@@ -242,23 +539,23 @@ fn check_resolver_change(ws: &Workspace<'_>, opts: &FixOptions) -> CargoResult<(
     // 2018 without `resolver` set must be V1
     assert_eq!(ws.resolve_behavior(), ResolveBehavior::V1);
     let specs = opts.compile_opts.spec.to_package_id_specs(ws)?;
-    let mut target_data =
-        RustcTargetData::new(ws, &opts.compile_opts.build_config.requested_kinds)?;
     let mut resolve_differences = |has_dev_units| -> CargoResult<(WorkspaceResolve<'_>, DiffMap)> {
+        let dry_run = false;
         let ws_resolve = ops::resolve_ws_with_opts(
             ws,
-            &mut target_data,
+            target_data,
             &opts.compile_opts.build_config.requested_kinds,
             &opts.compile_opts.cli_features,
             &specs,
             has_dev_units,
             crate::core::resolver::features::ForceAllTargets::No,
+            dry_run,
         )?;
 
         let feature_opts = FeatureOpts::new_behavior(ResolveBehavior::V2, has_dev_units);
         let v2_features = FeatureResolver::resolve(
             ws,
-            &mut target_data,
+            target_data,
             &ws_resolve.targeted_resolve,
             &ws_resolve.pkg_set,
             &opts.compile_opts.cli_features,
@@ -564,7 +861,8 @@ fn rustfix_crate(
             // We'll generate new errors below.
             file.errors_applying_fixes.clear();
         }
-        (last_output, last_made_changes) = rustfix_and_fix(&mut files, rustc, filename, gctx)?;
+        (last_output, last_made_changes) =
+            rustfix_and_fix(&mut files, rustc, filename, args, gctx)?;
         if current_iteration == 0 {
             first_output = Some(last_output.clone());
         }
@@ -621,6 +919,7 @@ fn rustfix_and_fix(
     files: &mut HashMap<String, FixedFile>,
     rustc: &ProcessBuilder,
     filename: &Path,
+    args: &FixArgs,
     gctx: &GlobalContext,
 ) -> CargoResult<(Output, bool)> {
     // If not empty, filter by these lints.
@@ -685,9 +984,16 @@ fn rustfix_and_fix(
             continue;
         };
 
+        let file_path = Path::new(&file_name);
         // Do not write into registry cache. See rust-lang/cargo#9857.
-        if Path::new(&file_name).starts_with(home_path) {
+        if file_path.starts_with(home_path) {
             continue;
+        }
+        // Do not write into standard library source. See rust-lang/cargo#9857.
+        if let Some(sysroot) = args.sysroot.as_deref() {
+            if file_path.starts_with(sysroot) {
+                continue;
+            }
         }
 
         if !file_names.clone().all(|f| f == &file_name) {
@@ -735,12 +1041,23 @@ fn rustfix_and_fix(
         });
         let mut fixed = CodeFix::new(&code);
 
-        // As mentioned above in `rustfix_crate`, we don't immediately warn
-        // about suggestions that fail to apply here, and instead we save them
-        // off for later processing.
+        let mut already_applied = HashSet::new();
         for suggestion in suggestions.iter().rev() {
+            // This assumes that if any of the machine applicable fixes in
+            // a diagnostic suggestion is a duplicate, we should see the
+            // entire suggestion as a duplicate.
+            if suggestion
+                .solutions
+                .iter()
+                .any(|sol| !already_applied.insert(sol))
+            {
+                continue;
+            }
             match fixed.apply(suggestion) {
                 Ok(()) => fixed_file.fixes_applied += 1,
+                // As mentioned above in `rustfix_crate`, we don't immediately
+                // warn about suggestions that fail to apply here, and instead
+                // we save them off for later processing.
                 Err(e) => fixed_file.errors_applying_fixes.push(e.to_string()),
             }
         }
@@ -834,6 +1151,8 @@ struct FixArgs {
     other: Vec<OsString>,
     /// Path to the `rustc` executable.
     rustc: PathBuf,
+    /// Path to host sysroot.
+    sysroot: Option<PathBuf>,
 }
 
 impl FixArgs {
@@ -905,6 +1224,11 @@ impl FixArgs {
                 .saturating_next()
         });
 
+        // ALLOWED: For the internal mechanism of `cargo fix` only.
+        // Shouldn't be set directly by anyone.
+        #[allow(clippy::disallowed_methods)]
+        let sysroot = env::var_os(SYSROOT_INTERNAL).map(PathBuf::from);
+
         Ok(FixArgs {
             file,
             prepare_for_edition,
@@ -912,6 +1236,7 @@ impl FixArgs {
             enabled_edition,
             other,
             rustc,
+            sysroot,
         })
     }
 

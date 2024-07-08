@@ -356,7 +356,13 @@ For more information, see issue #12207 <https://github.com/rust-lang/cargo/issue
                 let global_args = GlobalArgs::new(sub_args);
                 let new_args = cli(gctx).no_binary_name(true).try_get_matches_from(alias)?;
 
-                let new_cmd = new_args.subcommand_name().expect("subcommand is required");
+                let Some(new_cmd) = new_args.subcommand_name() else {
+                    return Err(anyhow!(
+                        "subcommand is required, add a subcommand to the command alias `alias.{cmd}`"
+                    )
+                        .into());
+                };
+
                 already_expanded.push(cmd.to_string());
                 if already_expanded.contains(&new_cmd.to_string()) {
                     // Crash if the aliases are corecursive / unresolvable
@@ -640,17 +646,17 @@ See '<cyan,bold>cargo help</> <cyan><<command>></>' for more information on a sp
                 .value_parser(clap::builder::ValueParser::path_buf()),
         )
         .arg(
-            flag("frozen", "Require Cargo.lock and cache to be up-to-date")
-                .help_heading(heading::MANIFEST_OPTIONS)
-                .global(true),
-        )
-        .arg(
-            flag("locked", "Require Cargo.lock to be up-to-date")
+            flag("locked", "Assert that `Cargo.lock` will remain unchanged")
                 .help_heading(heading::MANIFEST_OPTIONS)
                 .global(true),
         )
         .arg(
             flag("offline", "Run without accessing the network")
+                .help_heading(heading::MANIFEST_OPTIONS)
+                .global(true),
+        )
+        .arg(
+            flag("frozen", "Equivalent to specifying both --locked and --offline")
                 .help_heading(heading::MANIFEST_OPTIONS)
                 .global(true),
         )

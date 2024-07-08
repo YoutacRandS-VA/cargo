@@ -9,14 +9,14 @@ use std::task::Poll;
 use crate::core::compiler::{BuildConfig, CompileMode, DefaultExecutor, Executor};
 use crate::core::manifest::Target;
 use crate::core::resolver::CliFeatures;
-use crate::core::{registry::PackageRegistry, resolver::HasDevUnits};
-use crate::core::{Feature, Shell, Verbosity, Workspace};
+use crate::core::resolver::HasDevUnits;
+use crate::core::{Feature, PackageIdSpecQuery, Shell, Verbosity, Workspace};
 use crate::core::{Package, PackageId, PackageSet, Resolve, SourceId};
 use crate::sources::PathSource;
 use crate::util::cache_lock::CacheLockMode;
 use crate::util::context::JobsConfig;
 use crate::util::errors::CargoResult;
-use crate::util::toml::{prepare_for_publish, to_real_manifest};
+use crate::util::toml::prepare_for_publish;
 use crate::util::{self, human_readable_bytes, restricted_names, FileLock, GlobalContext};
 use crate::{drop_println, ops};
 use anyhow::Context as _;
@@ -28,6 +28,7 @@ use tar::{Archive, Builder, EntryType, Header, HeaderMode};
 use tracing::debug;
 use unicase::Ascii as UncasedAscii;
 
+#[derive(Clone)]
 pub struct PackageOpts<'gctx> {
     pub gctx: &'gctx GlobalContext,
     pub list: bool,
@@ -80,49 +81,43 @@ struct VcsInfo {
 #[derive(Serialize)]
 struct GitVcsInfo {
     sha1: String,
+    /// Indicate whether or not the Git worktree is dirty.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    dirty: bool,
 }
 
+/// Packages a single package in a workspace, returning the resulting tar file.
+///
+/// # Panics
+/// Panics if `opts.list` is true. In that case you probably don't want to
+/// actually build the package tarball; you should just make and print the list
+/// of files. (We don't currently provide a public API for that, but see how
+/// [`package`] does it.)
 pub fn package_one(
     ws: &Workspace<'_>,
     pkg: &Package,
     opts: &PackageOpts<'_>,
-) -> CargoResult<Option<FileLock>> {
+) -> CargoResult<FileLock> {
+    assert!(!opts.list);
+
+    let ar_files = prepare_archive(ws, pkg, opts)?;
+    let tarball = create_package(ws, pkg, ar_files)?;
+
+    if opts.verify {
+        run_verify(ws, pkg, &tarball, opts)?;
+    }
+
+    Ok(tarball)
+}
+
+// Builds a tarball and places it in the output directory.
+fn create_package(
+    ws: &Workspace<'_>,
+    pkg: &Package,
+    ar_files: Vec<ArchiveFile>,
+) -> CargoResult<FileLock> {
     let gctx = ws.gctx();
-    let mut src = PathSource::new(pkg.root(), pkg.package_id().source_id(), gctx);
-    src.update()?;
-
-    if opts.check_metadata {
-        check_metadata(pkg, gctx)?;
-    }
-
-    if !pkg.manifest().exclude().is_empty() && !pkg.manifest().include().is_empty() {
-        gctx.shell().warn(
-            "both package.include and package.exclude are specified; \
-             the exclude list will be ignored",
-        )?;
-    }
-    let src_files = src.list_files(pkg)?;
-
-    // Check (git) repository state, getting the current commit hash if not
-    // dirty.
-    let vcs_info = if !opts.allow_dirty {
-        // This will error if a dirty repo is found.
-        check_repo_state(pkg, &src_files, gctx)?
-    } else {
-        None
-    };
-
-    let ar_files = build_ar_list(ws, pkg, src_files, vcs_info)?;
-
     let filecount = ar_files.len();
-
-    if opts.list {
-        for ar_file in ar_files {
-            drop_println!(gctx, "{}", ar_file.rel_str);
-        }
-
-        return Ok(None);
-    }
 
     // Check that the package dependencies are safe to deploy.
     for dep in pkg.dependencies() {
@@ -145,10 +140,6 @@ pub fn package_one(
     dst.file().set_len(0)?;
     let uncompressed_size = tar(ws, pkg, ar_files, dst.file(), &filename)
         .with_context(|| "failed to prepare local package for uploading")?;
-    if opts.verify {
-        dst.seek(SeekFrom::Start(0))?;
-        run_verify(ws, pkg, &dst, opts).with_context(|| "failed to verify package tarball")?
-    }
 
     dst.seek(SeekFrom::Start(0))?;
     let src_path = dst.path();
@@ -172,44 +163,48 @@ pub fn package_one(
     // It doesn't really matter if this fails.
     drop(gctx.shell().status("Packaged", message));
 
-    return Ok(Some(dst));
+    return Ok(dst);
 }
 
 pub fn package(ws: &Workspace<'_>, opts: &PackageOpts<'_>) -> CargoResult<Option<Vec<FileLock>>> {
-    let pkgs = ws.members_with_features(
-        &opts.to_package.to_package_id_specs(ws)?,
-        &opts.cli_features,
-    )?;
-
+    let specs = &opts.to_package.to_package_id_specs(ws)?;
+    // If -p is used, we should check spec is matched with the members (See #13719)
+    if let ops::Packages::Packages(_) = opts.to_package {
+        for spec in specs.iter() {
+            let member_ids = ws.members().map(|p| p.package_id());
+            spec.query(member_ids)?;
+        }
+    }
+    let pkgs = ws.members_with_features(specs, &opts.cli_features)?;
     let mut dsts = Vec::with_capacity(pkgs.len());
 
     if ws.root().join("Cargo.lock").exists() {
         // Make sure the Cargo.lock is up-to-date and valid.
-        let _ = ops::resolve_ws(ws)?;
+        let dry_run = false;
+        let _ = ops::resolve_ws(ws, dry_run)?;
         // If Cargo.lock does not exist, it will be generated by `build_lock`
         // below, and will be validated during the verification step.
     }
 
     for (pkg, cli_features) in pkgs {
-        let result = package_one(
-            ws,
-            pkg,
-            &PackageOpts {
-                gctx: opts.gctx,
-                list: opts.list,
-                check_metadata: opts.check_metadata,
-                allow_dirty: opts.allow_dirty,
-                verify: opts.verify,
-                jobs: opts.jobs.clone(),
-                keep_going: opts.keep_going,
-                to_package: ops::Packages::Default,
-                targets: opts.targets.clone(),
-                cli_features: cli_features,
-            },
-        )?;
+        let opts = PackageOpts {
+            to_package: ops::Packages::Default,
+            cli_features,
+            ..opts.clone()
+        };
+        let ar_files = prepare_archive(ws, pkg, &opts)?;
 
-        if !opts.list {
-            dsts.push(result.unwrap());
+        if opts.list {
+            for ar_file in ar_files {
+                drop_println!(ws.gctx(), "{}", ar_file.rel_str);
+            }
+        } else {
+            let tarball = create_package(ws, pkg, ar_files)?;
+            if opts.verify {
+                run_verify(ws, pkg, &tarball, &opts)
+                    .with_context(|| "failed to verify package tarball")?;
+            }
+            dsts.push(tarball);
         }
     }
 
@@ -221,6 +216,34 @@ pub fn package(ws: &Workspace<'_>, opts: &PackageOpts<'_>) -> CargoResult<Option
     }
 }
 
+/// Performs pre-archiving checks and builds a list of files to archive.
+fn prepare_archive(
+    ws: &Workspace<'_>,
+    pkg: &Package,
+    opts: &PackageOpts<'_>,
+) -> CargoResult<Vec<ArchiveFile>> {
+    let gctx = ws.gctx();
+    let mut src = PathSource::new(pkg.root(), pkg.package_id().source_id(), gctx);
+    src.load()?;
+
+    if opts.check_metadata {
+        check_metadata(pkg, gctx)?;
+    }
+
+    if !pkg.manifest().exclude().is_empty() && !pkg.manifest().include().is_empty() {
+        gctx.shell().warn(
+            "both package.include and package.exclude are specified; \
+             the exclude list will be ignored",
+        )?;
+    }
+    let src_files = src.list_files(pkg)?;
+
+    // Check (git) repository state, getting the current commit hash.
+    let vcs_info = check_repo_state(pkg, &src_files, gctx, &opts)?;
+
+    build_ar_list(ws, pkg, src_files, vcs_info)
+}
+
 /// Builds list of files to archive.
 fn build_ar_list(
     ws: &Workspace<'_>,
@@ -230,7 +253,6 @@ fn build_ar_list(
 ) -> CargoResult<Vec<ArchiveFile>> {
     let mut result = HashMap::new();
     let root = pkg.root();
-
     for src_file in &src_files {
         let rel_path = src_file.strip_prefix(&root)?;
         check_filename(rel_path, &mut ws.gctx().shell())?;
@@ -305,6 +327,8 @@ fn build_ar_list(
             });
     }
 
+    let mut invalid_manifest_field: Vec<String> = vec![];
+
     let mut result = result.into_values().flatten().collect();
     if let Some(license_file) = &pkg.manifest().metadata().license_file {
         let license_path = Path::new(license_file);
@@ -319,7 +343,12 @@ fn build_ar_list(
                 ws,
             )?;
         } else {
-            warn_on_nonexistent_file(&pkg, &license_path, "license-file", &ws)?;
+            error_on_nonexistent_file(
+                &pkg,
+                &license_path,
+                "license-file",
+                &mut invalid_manifest_field,
+            );
         }
     }
     if let Some(readme) = &pkg.manifest().metadata().readme {
@@ -328,8 +357,12 @@ fn build_ar_list(
         if abs_file_path.is_file() {
             check_for_file_and_add("readme", readme_path, abs_file_path, pkg, &mut result, ws)?;
         } else {
-            warn_on_nonexistent_file(&pkg, &readme_path, "readme", &ws)?;
+            error_on_nonexistent_file(&pkg, &readme_path, "readme", &mut invalid_manifest_field);
         }
+    }
+
+    if !invalid_manifest_field.is_empty() {
+        return Err(anyhow::anyhow!(invalid_manifest_field.join("\n")));
     }
 
     for t in pkg
@@ -401,25 +434,27 @@ fn check_for_file_and_add(
     Ok(())
 }
 
-fn warn_on_nonexistent_file(
+fn error_on_nonexistent_file(
     pkg: &Package,
     path: &Path,
     manifest_key_name: &'static str,
-    ws: &Workspace<'_>,
-) -> CargoResult<()> {
+    invalid: &mut Vec<String>,
+) {
     let rel_msg = if path.is_absolute() {
         "".to_string()
     } else {
         format!(" (relative to `{}`)", pkg.root().display())
     };
-    ws.gctx().shell().warn(&format!(
+
+    let msg = format!(
         "{manifest_key_name} `{}` does not appear to exist{}.\n\
-                Please update the {manifest_key_name} setting in the manifest at `{}`\n\
-                This may become a hard error in the future.",
+                Please update the {manifest_key_name} setting in the manifest at `{}`.",
         path.display(),
         rel_msg,
         pkg.manifest_path().display()
-    ))
+    );
+
+    invalid.push(msg);
 }
 
 fn error_custom_build_file_not_in_package(
@@ -448,29 +483,12 @@ fn error_custom_build_file_not_in_package(
 }
 
 /// Construct `Cargo.lock` for the package to be published.
-fn build_lock(ws: &Workspace<'_>, orig_pkg: &Package) -> CargoResult<String> {
+fn build_lock(ws: &Workspace<'_>, publish_pkg: &Package) -> CargoResult<String> {
     let gctx = ws.gctx();
     let orig_resolve = ops::load_pkg_lockfile(ws)?;
 
-    // Convert Package -> TomlManifest -> Manifest -> Package
-    let contents = orig_pkg.manifest().contents();
-    let document = orig_pkg.manifest().document();
-    let toml_manifest =
-        prepare_for_publish(orig_pkg.manifest().resolved_toml(), ws, orig_pkg.root())?;
-    let source_id = orig_pkg.package_id().source_id();
-    let manifest = to_real_manifest(
-        contents.to_owned(),
-        document.clone(),
-        toml_manifest,
-        source_id,
-        orig_pkg.manifest_path(),
-        gctx,
-    )?;
-    let new_pkg = Package::new(manifest, orig_pkg.manifest_path());
-
-    // Regenerate Cargo.lock using the old one as a guide.
-    let tmp_ws = Workspace::ephemeral(new_pkg, ws.gctx(), None, true)?;
-    let mut tmp_reg = PackageRegistry::new(ws.gctx())?;
+    let tmp_ws = Workspace::ephemeral(publish_pkg.clone(), ws.gctx(), None, true)?;
+    let mut tmp_reg = ws.package_registry()?;
     let mut new_resolve = ops::resolve_with_previous(
         &mut tmp_reg,
         &tmp_ws,
@@ -538,20 +556,23 @@ fn check_metadata(pkg: &Package, gctx: &GlobalContext) -> CargoResult<()> {
 }
 
 /// Checks if the package source is in a *git* DVCS repository. If *git*, and
-/// the source is *dirty* (e.g., has uncommitted changes) then `bail!` with an
-/// informative message. Otherwise return the sha1 hash of the current *HEAD*
-/// commit, or `None` if no repo is found.
+/// the source is *dirty* (e.g., has uncommitted changes), and `--allow-dirty`
+/// has not been passed, then `bail!` with an informative message. Otherwise
+/// return the sha1 hash of the current *HEAD* commit, or `None` if no repo is
+/// found.
 fn check_repo_state(
     p: &Package,
     src_files: &[PathBuf],
     gctx: &GlobalContext,
+    opts: &PackageOpts<'_>,
 ) -> CargoResult<Option<VcsInfo>> {
     if let Ok(repo) = git2::Repository::discover(p.root()) {
         if let Some(workdir) = repo.workdir() {
             debug!("found a git repo at {:?}", workdir);
             let path = p.manifest_path();
-            let path = path.strip_prefix(workdir).unwrap_or(path);
-            if let Ok(status) = repo.status_file(path) {
+            let path =
+                paths::strip_prefix_canonical(path, workdir).unwrap_or_else(|_| path.to_path_buf());
+            if let Ok(status) = repo.status_file(&path) {
                 if (status & git2::Status::IGNORED).is_empty() {
                     debug!(
                         "found (git) Cargo.toml at {:?} in workdir {:?}",
@@ -563,7 +584,7 @@ fn check_repo_state(
                         .unwrap_or("")
                         .replace("\\", "/");
                     return Ok(Some(VcsInfo {
-                        git: git(p, src_files, &repo)?,
+                        git: git(p, src_files, &repo, &opts)?,
                         path_in_vcs,
                     }));
                 }
@@ -586,7 +607,12 @@ fn check_repo_state(
     // directory is dirty or not, thus we have to assume that it's clean.
     return Ok(None);
 
-    fn git(p: &Package, src_files: &[PathBuf], repo: &git2::Repository) -> CargoResult<GitVcsInfo> {
+    fn git(
+        p: &Package,
+        src_files: &[PathBuf],
+        repo: &git2::Repository,
+        opts: &PackageOpts<'_>,
+    ) -> CargoResult<GitVcsInfo> {
         // This is a collection of any dirty or untracked files. This covers:
         // - new/modified/deleted/renamed/type change (index or worktree)
         // - untracked files (which are "new" worktree files)
@@ -611,10 +637,12 @@ fn check_repo_state(
                     .to_string()
             })
             .collect();
-        if dirty_src_files.is_empty() {
+        let dirty = !dirty_src_files.is_empty();
+        if !dirty || opts.allow_dirty {
             let rev_obj = repo.revparse_single("HEAD")?;
             Ok(GitVcsInfo {
                 sha1: rev_obj.id().to_string(),
+                dirty,
             })
         } else {
             anyhow::bail!(
@@ -700,6 +728,11 @@ fn tar(
 
     let base_name = format!("{}-{}", pkg.name(), pkg.version());
     let base_path = Path::new(&base_name);
+    let included = ar_files
+        .iter()
+        .map(|ar_file| ar_file.rel_path.clone())
+        .collect::<Vec<_>>();
+    let publish_pkg = prepare_for_publish(pkg, ws, &included)?;
 
     let mut uncompressed_size = 0;
     for ar_file in ar_files {
@@ -730,8 +763,8 @@ fn tar(
             }
             FileContents::Generated(generated_kind) => {
                 let contents = match generated_kind {
-                    GeneratedFile::Manifest => pkg.to_registry_toml(ws)?,
-                    GeneratedFile::Lockfile => build_lock(ws, pkg)?,
+                    GeneratedFile::Manifest => publish_pkg.manifest().to_resolved_contents()?,
+                    GeneratedFile::Lockfile => build_lock(ws, &publish_pkg)?,
                     GeneratedFile::VcsInfo(ref s) => serde_json::to_string_pretty(s)?,
                 };
                 header.set_entry_type(EntryType::file());
@@ -948,7 +981,7 @@ fn run_verify(
             target_rustc_args: rustc_args,
             target_rustc_crate_types: None,
             rustdoc_document_private_items: false,
-            honor_rust_version: true,
+            honor_rust_version: None,
         },
         &exec,
     )?;

@@ -246,7 +246,7 @@ impl<'a, 'gctx> BuildRunner<'a, 'gctx> {
                 let mut args = compiler::extern_args(&self, unit, &mut unstable_opts)?;
                 args.extend(compiler::lto_args(&self, unit));
                 args.extend(compiler::features_args(unit));
-                args.extend(compiler::check_cfg_args(&self, unit));
+                args.extend(compiler::check_cfg_args(&self, unit)?);
 
                 let script_meta = self.find_build_script_metadata(unit);
                 if let Some(meta) = script_meta {
@@ -256,12 +256,9 @@ impl<'a, 'gctx> BuildRunner<'a, 'gctx> {
                             args.push(cfg.into());
                         }
 
-                        if !output.check_cfgs.is_empty() {
-                            args.push("-Zunstable-options".into());
-                            for check_cfg in &output.check_cfgs {
-                                args.push("--check-cfg".into());
-                                args.push(check_cfg.into());
-                            }
+                        for check_cfg in &output.check_cfgs {
+                            args.push("--check-cfg".into());
+                            args.push(check_cfg.into());
                         }
 
                         for (lt, arg) in &output.linker_args {
@@ -272,7 +269,7 @@ impl<'a, 'gctx> BuildRunner<'a, 'gctx> {
                         }
                     }
                 }
-                args.extend(self.bcx.rustdocflags_args(unit).iter().map(Into::into));
+                args.extend(unit.rustdocflags.iter().map(Into::into));
 
                 use super::MessageFormat;
                 let format = match self.bcx.build_config.message_format {
@@ -577,7 +574,7 @@ impl<'a, 'gctx> BuildRunner<'a, 'gctx> {
                 if let Some(ref export_path) = output.export_path {
                     if let Some(other_unit) = output_collisions.insert(export_path.clone(), unit) {
                         self.bcx.gctx.shell().warn(format!(
-                            "`--out-dir` filename collision.\n\
+                            "`--artifact-dir` filename collision.\n\
                              {}\
                              The exported filenames should be unique.\n\
                              {}",

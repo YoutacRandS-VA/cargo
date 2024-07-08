@@ -1,5 +1,7 @@
 //! Tests for the `cargo new` command.
 
+#![allow(deprecated)]
+
 use cargo_test_support::cargo_process;
 use cargo_test_support::paths;
 use std::env;
@@ -42,7 +44,7 @@ fn simple_lib() {
     let contents = fs::read_to_string(&lib).unwrap();
     assert_eq!(
         contents,
-        r#"pub fn add(left: usize, right: usize) -> usize {
+        r#"pub fn add(left: u64, right: u64) -> u64 {
     left + right
 }
 

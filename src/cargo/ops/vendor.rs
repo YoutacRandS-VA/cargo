@@ -1,4 +1,3 @@
-use crate::core::package::MANIFEST_PREAMBLE;
 use crate::core::shell::Verbosity;
 use crate::core::{GitReference, Package, Workspace};
 use crate::ops;
@@ -81,6 +80,7 @@ fn sync(
     workspaces: &[&Workspace<'_>],
     opts: &VendorOptions<'_>,
 ) -> CargoResult<VendorConfig> {
+    let dry_run = false;
     let canonical_destination = try_canonicalize(opts.destination);
     let canonical_destination = canonical_destination.as_deref().unwrap_or(opts.destination);
     let dest_dir_already_exists = canonical_destination.exists();
@@ -113,7 +113,7 @@ fn sync(
     // crate to work with.
     for ws in workspaces {
         let (packages, resolve) =
-            ops::resolve_ws(ws).with_context(|| "failed to load pkg lockfile")?;
+            ops::resolve_ws(ws, dry_run).with_context(|| "failed to load pkg lockfile")?;
 
         packages
             .get_many(resolve.iter())
@@ -145,7 +145,7 @@ fn sync(
     // tables about them.
     for ws in workspaces {
         let (packages, resolve) =
-            ops::resolve_ws(ws).with_context(|| "failed to load pkg lockfile")?;
+            ops::resolve_ws(ws, dry_run).with_context(|| "failed to load pkg lockfile")?;
 
         packages
             .get_many(resolve.iter())
@@ -360,8 +360,7 @@ fn cp_sources(
         let cksum = if dst.file_name() == Some(OsStr::new("Cargo.toml"))
             && pkg.package_id().source_id().is_git()
         {
-            let original_toml = toml::to_string_pretty(pkg.manifest().resolved_toml())?;
-            let contents = format!("{}\n{}", MANIFEST_PREAMBLE, original_toml);
+            let contents = pkg.manifest().to_resolved_contents()?;
             copy_and_checksum(
                 &dst,
                 &mut dst_opts,

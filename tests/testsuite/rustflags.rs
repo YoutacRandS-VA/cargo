@@ -1,9 +1,7 @@
 //! Tests for setting custom rustc flags.
 
 use cargo_test_support::registry::Package;
-use cargo_test_support::{
-    basic_lib_manifest, basic_manifest, paths, project, project_in_home, rustc_host,
-};
+use cargo_test_support::{basic_manifest, paths, project, project_in_home, rustc_host, str};
 use std::fs;
 
 #[cargo_test]
@@ -27,27 +25,57 @@ fn env_rustflags_normal_source() {
     p.cargo("check --lib")
         .env("RUSTFLAGS", "-Z bogus")
         .with_status(101)
-        .with_stderr_contains("[..]bogus[..]")
+        .with_stderr_data(str![[r#"
+[ERROR] failed to run `rustc` to learn about target-specific information
+
+Caused by:
+  [..]bogus[..]
+...
+"#]])
         .run();
     p.cargo("check --bin=a")
         .env("RUSTFLAGS", "-Z bogus")
         .with_status(101)
-        .with_stderr_contains("[..]bogus[..]")
+        .with_stderr_data(str![[r#"
+[ERROR] failed to run `rustc` to learn about target-specific information
+
+Caused by:
+  [..]bogus[..]
+...
+"#]])
         .run();
     p.cargo("check --example=b")
         .env("RUSTFLAGS", "-Z bogus")
         .with_status(101)
-        .with_stderr_contains("[..]bogus[..]")
+        .with_stderr_data(str![[r#"
+[ERROR] failed to run `rustc` to learn about target-specific information
+
+Caused by:
+  [..]bogus[..]
+...
+"#]])
         .run();
     p.cargo("test")
         .env("RUSTFLAGS", "-Z bogus")
         .with_status(101)
-        .with_stderr_contains("[..]bogus[..]")
+        .with_stderr_data(str![[r#"
+[ERROR] failed to run `rustc` to learn about target-specific information
+
+Caused by:
+  [..]bogus[..]
+...
+"#]])
         .run();
     p.cargo("bench")
         .env("RUSTFLAGS", "-Z bogus")
         .with_status(101)
-        .with_stderr_contains("[..]bogus[..]")
+        .with_stderr_data(str![[r#"
+[ERROR] failed to run `rustc` to learn about target-specific information
+
+Caused by:
+  [..]bogus[..]
+...
+"#]])
         .run();
 }
 
@@ -115,76 +143,6 @@ fn env_rustflags_build_script_dep() {
 }
 
 #[cargo_test]
-fn env_rustflags_plugin() {
-    // RUSTFLAGS should be passed to rustc for plugins
-    // when --target is not specified.
-    // In this test if --cfg foo is not passed the build will fail.
-    let p = project()
-        .file(
-            "Cargo.toml",
-            r#"
-                [package]
-                name = "foo"
-                version = "0.0.1"
-
-                [lib]
-                name = "foo"
-                plugin = true
-            "#,
-        )
-        .file(
-            "src/lib.rs",
-            r#"
-                fn main() { }
-                #[cfg(not(foo))]
-                fn main() { }
-            "#,
-        )
-        .build();
-
-    p.cargo("check").env("RUSTFLAGS", "--cfg foo").run();
-}
-
-#[cargo_test]
-fn env_rustflags_plugin_dep() {
-    // RUSTFLAGS should be passed to rustc for plugins
-    // when --target is not specified.
-    // In this test if --cfg foo is not passed the build will fail.
-    let foo = project()
-        .file(
-            "Cargo.toml",
-            r#"
-                [package]
-                name = "foo"
-                version = "0.0.1"
-
-                [lib]
-                name = "foo"
-                plugin = true
-
-                [dependencies.bar]
-                path = "../bar"
-            "#,
-        )
-        .file("src/lib.rs", "fn foo() {}")
-        .build();
-    let _bar = project()
-        .at("bar")
-        .file("Cargo.toml", &basic_lib_manifest("bar"))
-        .file(
-            "src/lib.rs",
-            r#"
-                fn bar() { }
-                #[cfg(not(foo))]
-                fn bar() { }
-            "#,
-        )
-        .build();
-
-    foo.cargo("check").env("RUSTFLAGS", "--cfg foo").run();
-}
-
-#[cargo_test]
 fn env_rustflags_normal_source_with_target() {
     let p = project()
         .file("src/lib.rs", "")
@@ -208,31 +166,61 @@ fn env_rustflags_normal_source_with_target() {
         .arg(host)
         .env("RUSTFLAGS", "-Z bogus")
         .with_status(101)
-        .with_stderr_contains("[..]bogus[..]")
+        .with_stderr_data(str![[r#"
+[ERROR] failed to run `rustc` to learn about target-specific information
+
+Caused by:
+  [..]bogus[..]
+...
+"#]])
         .run();
     p.cargo("check --bin=a --target")
         .arg(host)
         .env("RUSTFLAGS", "-Z bogus")
         .with_status(101)
-        .with_stderr_contains("[..]bogus[..]")
+        .with_stderr_data(str![[r#"
+[ERROR] failed to run `rustc` to learn about target-specific information
+
+Caused by:
+  [..]bogus[..]
+...
+"#]])
         .run();
     p.cargo("check --example=b --target")
         .arg(host)
         .env("RUSTFLAGS", "-Z bogus")
         .with_status(101)
-        .with_stderr_contains("[..]bogus[..]")
+        .with_stderr_data(str![[r#"
+[ERROR] failed to run `rustc` to learn about target-specific information
+
+Caused by:
+  [..]bogus[..]
+...
+"#]])
         .run();
     p.cargo("test --target")
         .arg(host)
         .env("RUSTFLAGS", "-Z bogus")
         .with_status(101)
-        .with_stderr_contains("[..]bogus[..]")
+        .with_stderr_data(str![[r#"
+[ERROR] failed to run `rustc` to learn about target-specific information
+
+Caused by:
+  [..]bogus[..]
+...
+"#]])
         .run();
     p.cargo("bench --target")
         .arg(host)
         .env("RUSTFLAGS", "-Z bogus")
         .with_status(101)
-        .with_stderr_contains("[..]bogus[..]")
+        .with_stderr_data(str![[r#"
+[ERROR] failed to run `rustc` to learn about target-specific information
+
+Caused by:
+  [..]bogus[..]
+...
+"#]])
         .run();
 }
 
@@ -346,84 +334,6 @@ fn env_rustflags_build_script_dep_with_target() {
 }
 
 #[cargo_test]
-fn env_rustflags_plugin_with_target() {
-    // RUSTFLAGS should not be passed to rustc for plugins
-    // when --target is specified.
-    // In this test if --cfg foo is passed the build will fail.
-    let p = project()
-        .file(
-            "Cargo.toml",
-            r#"
-                [package]
-                name = "foo"
-                version = "0.0.1"
-
-                [lib]
-                name = "foo"
-                plugin = true
-            "#,
-        )
-        .file(
-            "src/lib.rs",
-            r#"
-                fn main() { }
-                #[cfg(foo)]
-                fn main() { }
-            "#,
-        )
-        .build();
-
-    let host = rustc_host();
-    p.cargo("check --target")
-        .arg(host)
-        .env("RUSTFLAGS", "--cfg foo")
-        .run();
-}
-
-#[cargo_test]
-fn env_rustflags_plugin_dep_with_target() {
-    // RUSTFLAGS should not be passed to rustc for plugins
-    // when --target is specified.
-    // In this test if --cfg foo is passed the build will fail.
-    let foo = project()
-        .file(
-            "Cargo.toml",
-            r#"
-                [package]
-                name = "foo"
-                version = "0.0.1"
-
-                [lib]
-                name = "foo"
-                plugin = true
-
-                [dependencies.bar]
-                path = "../bar"
-            "#,
-        )
-        .file("src/lib.rs", "fn foo() {}")
-        .build();
-    let _bar = project()
-        .at("bar")
-        .file("Cargo.toml", &basic_lib_manifest("bar"))
-        .file(
-            "src/lib.rs",
-            r#"
-                fn bar() { }
-                #[cfg(foo)]
-                fn bar() { }
-            "#,
-        )
-        .build();
-
-    let host = rustc_host();
-    foo.cargo("check --target")
-        .arg(host)
-        .env("RUSTFLAGS", "--cfg foo")
-        .run();
-}
-
-#[cargo_test]
 fn env_rustflags_recompile() {
     let p = project().file("src/lib.rs", "").build();
 
@@ -432,7 +342,13 @@ fn env_rustflags_recompile() {
     p.cargo("check")
         .env("RUSTFLAGS", "-Z bogus")
         .with_status(101)
-        .with_stderr_contains("[..]bogus[..]")
+        .with_stderr_data(str![[r#"
+[ERROR] failed to run `rustc` to learn about target-specific information
+
+Caused by:
+  [..]bogus[..]
+...
+"#]])
         .run();
 }
 
@@ -445,7 +361,13 @@ fn env_rustflags_recompile2() {
     p.cargo("check")
         .env("RUSTFLAGS", "-Z bogus")
         .with_status(101)
-        .with_stderr_contains("[..]bogus[..]")
+        .with_stderr_data(str![[r#"
+[ERROR] failed to run `rustc` to learn about target-specific information
+
+Caused by:
+  [..]bogus[..]
+...
+"#]])
         .run();
 }
 
@@ -456,7 +378,10 @@ fn env_rustflags_no_recompile() {
     p.cargo("check").env("RUSTFLAGS", "--cfg foo").run();
     p.cargo("check")
         .env("RUSTFLAGS", "--cfg foo")
-        .with_stderr("[FINISHED] [..]")
+        .with_stderr_data(str![[r#"
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
 }
 
@@ -486,23 +411,53 @@ fn build_rustflags_normal_source() {
 
     p.cargo("check --lib")
         .with_status(101)
-        .with_stderr_contains("[..]bogus[..]")
+        .with_stderr_data(str![[r#"
+[ERROR] failed to run `rustc` to learn about target-specific information
+
+Caused by:
+  [..]bogus[..]
+...
+"#]])
         .run();
     p.cargo("check --bin=a")
         .with_status(101)
-        .with_stderr_contains("[..]bogus[..]")
+        .with_stderr_data(str![[r#"
+[ERROR] failed to run `rustc` to learn about target-specific information
+
+Caused by:
+  [..]bogus[..]
+...
+"#]])
         .run();
     p.cargo("check --example=b")
         .with_status(101)
-        .with_stderr_contains("[..]bogus[..]")
+        .with_stderr_data(str![[r#"
+[ERROR] failed to run `rustc` to learn about target-specific information
+
+Caused by:
+  [..]bogus[..]
+...
+"#]])
         .run();
     p.cargo("test")
         .with_status(101)
-        .with_stderr_contains("[..]bogus[..]")
+        .with_stderr_data(str![[r#"
+[ERROR] failed to run `rustc` to learn about target-specific information
+
+Caused by:
+  [..]bogus[..]
+...
+"#]])
         .run();
     p.cargo("bench")
         .with_status(101)
-        .with_stderr_contains("[..]bogus[..]")
+        .with_stderr_data(str![[r#"
+[ERROR] failed to run `rustc` to learn about target-specific information
+
+Caused by:
+  [..]bogus[..]
+...
+"#]])
         .run();
 }
 
@@ -584,90 +539,6 @@ fn build_rustflags_build_script_dep() {
 }
 
 #[cargo_test]
-fn build_rustflags_plugin() {
-    // RUSTFLAGS should be passed to rustc for plugins
-    // when --target is not specified.
-    // In this test if --cfg foo is not passed the build will fail.
-    let p = project()
-        .file(
-            "Cargo.toml",
-            r#"
-                [package]
-                name = "foo"
-                version = "0.0.1"
-
-                [lib]
-                name = "foo"
-                plugin = true
-            "#,
-        )
-        .file(
-            "src/lib.rs",
-            r#"
-                fn main() { }
-                #[cfg(not(foo))]
-                fn main() { }
-            "#,
-        )
-        .file(
-            ".cargo/config.toml",
-            r#"
-            [build]
-            rustflags = ["--cfg", "foo"]
-            "#,
-        )
-        .build();
-
-    p.cargo("check").run();
-}
-
-#[cargo_test]
-fn build_rustflags_plugin_dep() {
-    // RUSTFLAGS should be passed to rustc for plugins
-    // when --target is not specified.
-    // In this test if --cfg foo is not passed the build will fail.
-    let foo = project()
-        .file(
-            "Cargo.toml",
-            r#"
-                [package]
-                name = "foo"
-                version = "0.0.1"
-
-                [lib]
-                name = "foo"
-                plugin = true
-
-                [dependencies.bar]
-                path = "../bar"
-            "#,
-        )
-        .file("src/lib.rs", "fn foo() {}")
-        .file(
-            ".cargo/config.toml",
-            r#"
-            [build]
-            rustflags = ["--cfg", "foo"]
-            "#,
-        )
-        .build();
-    let _bar = project()
-        .at("bar")
-        .file("Cargo.toml", &basic_lib_manifest("bar"))
-        .file(
-            "src/lib.rs",
-            r#"
-                fn bar() { }
-                #[cfg(not(foo))]
-                fn bar() { }
-            "#,
-        )
-        .build();
-
-    foo.cargo("check").run();
-}
-
-#[cargo_test]
 fn build_rustflags_normal_source_with_target() {
     let p = project()
         .file("src/lib.rs", "")
@@ -697,27 +568,57 @@ fn build_rustflags_normal_source_with_target() {
     p.cargo("check --lib --target")
         .arg(host)
         .with_status(101)
-        .with_stderr_contains("[..]bogus[..]")
+        .with_stderr_data(str![[r#"
+[ERROR] failed to run `rustc` to learn about target-specific information
+
+Caused by:
+  [..]bogus[..]
+...
+"#]])
         .run();
     p.cargo("check --bin=a --target")
         .arg(host)
         .with_status(101)
-        .with_stderr_contains("[..]bogus[..]")
+        .with_stderr_data(str![[r#"
+[ERROR] failed to run `rustc` to learn about target-specific information
+
+Caused by:
+  [..]bogus[..]
+...
+"#]])
         .run();
     p.cargo("check --example=b --target")
         .arg(host)
         .with_status(101)
-        .with_stderr_contains("[..]bogus[..]")
+        .with_stderr_data(str![[r#"
+[ERROR] failed to run `rustc` to learn about target-specific information
+
+Caused by:
+  [..]bogus[..]
+...
+"#]])
         .run();
     p.cargo("test --target")
         .arg(host)
         .with_status(101)
-        .with_stderr_contains("[..]bogus[..]")
+        .with_stderr_data(str![[r#"
+[ERROR] failed to run `rustc` to learn about target-specific information
+
+Caused by:
+  [..]bogus[..]
+...
+"#]])
         .run();
     p.cargo("bench --target")
         .arg(host)
         .with_status(101)
-        .with_stderr_contains("[..]bogus[..]")
+        .with_stderr_data(str![[r#"
+[ERROR] failed to run `rustc` to learn about target-specific information
+
+Caused by:
+  [..]bogus[..]
+...
+"#]])
         .run();
 }
 
@@ -801,92 +702,6 @@ fn build_rustflags_build_script_dep_with_target() {
 }
 
 #[cargo_test]
-fn build_rustflags_plugin_with_target() {
-    // RUSTFLAGS should not be passed to rustc for plugins
-    // when --target is specified.
-    // In this test if --cfg foo is passed the build will fail.
-    let p = project()
-        .file(
-            "Cargo.toml",
-            r#"
-                [package]
-                name = "foo"
-                version = "0.0.1"
-
-                [lib]
-                name = "foo"
-                plugin = true
-            "#,
-        )
-        .file(
-            "src/lib.rs",
-            r#"
-                fn main() { }
-                #[cfg(foo)]
-                fn main() { }
-            "#,
-        )
-        .file(
-            ".cargo/config.toml",
-            r#"
-            [build]
-            rustflags = ["--cfg", "foo"]
-            "#,
-        )
-        .build();
-
-    let host = rustc_host();
-    p.cargo("check --target").arg(host).run();
-}
-
-#[cargo_test]
-fn build_rustflags_plugin_dep_with_target() {
-    // RUSTFLAGS should not be passed to rustc for plugins
-    // when --target is specified.
-    // In this test if --cfg foo is passed the build will fail.
-    let foo = project()
-        .file(
-            "Cargo.toml",
-            r#"
-                [package]
-                name = "foo"
-                version = "0.0.1"
-
-                [lib]
-                name = "foo"
-                plugin = true
-
-                [dependencies.bar]
-                path = "../bar"
-            "#,
-        )
-        .file("src/lib.rs", "fn foo() {}")
-        .file(
-            ".cargo/config.toml",
-            r#"
-            [build]
-            rustflags = ["--cfg", "foo"]
-            "#,
-        )
-        .build();
-    let _bar = project()
-        .at("bar")
-        .file("Cargo.toml", &basic_lib_manifest("bar"))
-        .file(
-            "src/lib.rs",
-            r#"
-                fn bar() { }
-                #[cfg(foo)]
-                fn bar() { }
-            "#,
-        )
-        .build();
-
-    let host = rustc_host();
-    foo.cargo("check --target").arg(host).run();
-}
-
-#[cargo_test]
 fn build_rustflags_recompile() {
     let p = project().file("src/lib.rs", "").build();
 
@@ -903,7 +718,13 @@ fn build_rustflags_recompile() {
 
     p.cargo("check")
         .with_status(101)
-        .with_stderr_contains("[..]bogus[..]")
+        .with_stderr_data(str![[r#"
+[ERROR] failed to run `rustc` to learn about target-specific information
+
+Caused by:
+  [..]bogus[..]
+...
+"#]])
         .run();
 }
 
@@ -924,7 +745,13 @@ fn build_rustflags_recompile2() {
 
     p.cargo("check")
         .with_status(101)
-        .with_stderr_contains("[..]bogus[..]")
+        .with_stderr_data(str![[r#"
+[ERROR] failed to run `rustc` to learn about target-specific information
+
+Caused by:
+  [..]bogus[..]
+...
+"#]])
         .run();
 }
 
@@ -944,7 +771,10 @@ fn build_rustflags_no_recompile() {
     p.cargo("check").env("RUSTFLAGS", "--cfg foo").run();
     p.cargo("check")
         .env("RUSTFLAGS", "--cfg foo")
-        .with_stderr("[FINISHED] [..]")
+        .with_stderr_data(str![[r#"
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
 }
 
@@ -999,23 +829,53 @@ fn target_rustflags_normal_source() {
 
     p.cargo("check --lib")
         .with_status(101)
-        .with_stderr_contains("[..]bogus[..]")
+        .with_stderr_data(str![[r#"
+[ERROR] failed to run `rustc` to learn about target-specific information
+
+Caused by:
+  [..]bogus[..]
+...
+"#]])
         .run();
     p.cargo("check --bin=a")
         .with_status(101)
-        .with_stderr_contains("[..]bogus[..]")
+        .with_stderr_data(str![[r#"
+[ERROR] failed to run `rustc` to learn about target-specific information
+
+Caused by:
+  [..]bogus[..]
+...
+"#]])
         .run();
     p.cargo("check --example=b")
         .with_status(101)
-        .with_stderr_contains("[..]bogus[..]")
+        .with_stderr_data(str![[r#"
+[ERROR] failed to run `rustc` to learn about target-specific information
+
+Caused by:
+  [..]bogus[..]
+...
+"#]])
         .run();
     p.cargo("test")
         .with_status(101)
-        .with_stderr_contains("[..]bogus[..]")
+        .with_stderr_data(str![[r#"
+[ERROR] failed to run `rustc` to learn about target-specific information
+
+Caused by:
+  [..]bogus[..]
+...
+"#]])
         .run();
     p.cargo("bench")
         .with_status(101)
-        .with_stderr_contains("[..]bogus[..]")
+        .with_stderr_data(str![[r#"
+[ERROR] failed to run `rustc` to learn about target-specific information
+
+Caused by:
+  [..]bogus[..]
+...
+"#]])
         .run();
 }
 
@@ -1124,7 +984,12 @@ fn build_rustflags_for_build_scripts() {
     p.cargo("check --target")
         .arg(host)
         .with_status(101)
-        .with_stderr_contains("[..]assertion failed[..]")
+        .with_stderr_data(str![[r#"
+...
+  assertion failed: cfg!(foo)
+  [NOTE] run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+"#]])
         .run();
 
     // Enabling -Ztarget-applies-to-host should not make a difference without the config setting
@@ -1137,7 +1002,12 @@ fn build_rustflags_for_build_scripts() {
         .masquerade_as_nightly_cargo(&["target-applies-to-host"])
         .arg("-Ztarget-applies-to-host")
         .with_status(101)
-        .with_stderr_contains("[..]assertion failed[..]")
+        .with_stderr_data(str![[r#"
+...
+  assertion failed: cfg!(foo)
+  [NOTE] run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+"#]])
         .run();
 
     // When set to false though, the "proper" behavior where host artifacts _only_ pick up on
@@ -1155,14 +1025,24 @@ fn build_rustflags_for_build_scripts() {
         .masquerade_as_nightly_cargo(&["target-applies-to-host"])
         .arg("-Ztarget-applies-to-host")
         .with_status(101)
-        .with_stderr_contains("[..]assertion failed[..]")
+        .with_stderr_data(str![[r#"
+...
+  assertion failed: cfg!(foo)
+  [NOTE] run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+"#]])
         .run();
     p.cargo("check --target")
         .arg(host)
         .masquerade_as_nightly_cargo(&["target-applies-to-host"])
         .arg("-Ztarget-applies-to-host")
         .with_status(101)
-        .with_stderr_contains("[..]assertion failed[..]")
+        .with_stderr_data(str![[r#"
+...
+  assertion failed: cfg!(foo)
+  [NOTE] run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+"#]])
         .run();
 }
 
@@ -1225,23 +1105,53 @@ fn target_rustflags_precedence() {
 
     p.cargo("check --lib")
         .with_status(101)
-        .with_stderr_contains("[..]bogus[..]")
+        .with_stderr_data(str![[r#"
+[ERROR] failed to run `rustc` to learn about target-specific information
+
+Caused by:
+  [..]bogus[..]
+...
+"#]])
         .run();
     p.cargo("check --bin=a")
         .with_status(101)
-        .with_stderr_contains("[..]bogus[..]")
+        .with_stderr_data(str![[r#"
+[ERROR] failed to run `rustc` to learn about target-specific information
+
+Caused by:
+  [..]bogus[..]
+...
+"#]])
         .run();
     p.cargo("check --example=b")
         .with_status(101)
-        .with_stderr_contains("[..]bogus[..]")
+        .with_stderr_data(str![[r#"
+[ERROR] failed to run `rustc` to learn about target-specific information
+
+Caused by:
+  [..]bogus[..]
+...
+"#]])
         .run();
     p.cargo("test")
         .with_status(101)
-        .with_stderr_contains("[..]bogus[..]")
+        .with_stderr_data(str![[r#"
+[ERROR] failed to run `rustc` to learn about target-specific information
+
+Caused by:
+  [..]bogus[..]
+...
+"#]])
         .run();
     p.cargo("bench")
         .with_status(101)
-        .with_stderr_contains("[..]bogus[..]")
+        .with_stderr_data(str![[r#"
+[ERROR] failed to run `rustc` to learn about target-specific information
+
+Caused by:
+  [..]bogus[..]
+...
+"#]])
         .run();
 }
 
@@ -1269,62 +1179,57 @@ fn cfg_rustflags_normal_source() {
         .build();
 
     p.cargo("build --lib -v")
-        .with_stderr(
-            "\
-[COMPILING] foo v0.0.1 ([..])
-[RUNNING] `rustc [..] --cfg bar[..]`
-[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [..]
-",
-        )
+        .with_stderr_data(str![[r#"
+[COMPILING] foo v0.0.1 ([ROOT]/foo)
+[RUNNING] `rustc --crate-name foo [..] --cfg bar`
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
 
     p.cargo("build --bin=a -v")
-        .with_stderr(
-            "\
-[COMPILING] foo v0.0.1 ([..])
-[RUNNING] `rustc [..] --cfg bar[..]`
-[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [..]
-",
-        )
+        .with_stderr_data(str![[r#"
+[COMPILING] foo v0.0.1 ([ROOT]/foo)
+[RUNNING] `rustc --crate-name a [..] --cfg bar`
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
 
     p.cargo("build --example=b -v")
-        .with_stderr(
-            "\
-[COMPILING] foo v0.0.1 ([..])
-[RUNNING] `rustc [..] --cfg bar[..]`
-[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [..]
-",
-        )
+        .with_stderr_data(str![[r#"
+[COMPILING] foo v0.0.1 ([ROOT]/foo)
+[RUNNING] `rustc --crate-name b [..] --cfg bar`
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
 
     p.cargo("test --no-run -v")
-        .with_stderr(
-            "\
-[COMPILING] foo v0.0.1 ([..])
-[RUNNING] `rustc [..] --cfg bar[..]`
-[RUNNING] `rustc [..] --cfg bar[..]`
-[RUNNING] `rustc [..] --cfg bar[..]`
-[FINISHED] `test` profile [unoptimized + debuginfo] target(s) in [..]
-[EXECUTABLE] `[..]/target/debug/deps/foo-[..][EXE]`
-[EXECUTABLE] `[..]/target/debug/deps/a-[..][EXE]`
-[EXECUTABLE] `[..]/target/debug/deps/c-[..][EXE]`
-",
-        )
+        .with_stderr_data(str![[r#"
+[COMPILING] foo v0.0.1 ([ROOT]/foo)
+[RUNNING] `rustc [..] --cfg bar`
+[RUNNING] `rustc [..] --cfg bar`
+[RUNNING] `rustc [..] --cfg bar`
+[FINISHED] `test` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+[EXECUTABLE] `[ROOT]/foo/target/debug/deps/foo-[HASH][EXE]`
+[EXECUTABLE] `[ROOT]/foo/target/debug/deps/a-[HASH][EXE]`
+[EXECUTABLE] `[ROOT]/foo/target/debug/deps/c-[HASH][EXE]`
+
+"#]])
         .run();
 
     p.cargo("bench --no-run -v")
-        .with_stderr(
-            "\
-[COMPILING] foo v0.0.1 ([..])
-[RUNNING] `rustc [..] --cfg bar[..]`
-[RUNNING] `rustc [..] --cfg bar[..]`
-[RUNNING] `rustc [..] --cfg bar[..]`
-[FINISHED] `bench` profile [optimized] target(s) in [..]
-[EXECUTABLE] `[..]/target/release/deps/foo-[..][EXE]`
-[EXECUTABLE] `[..]/target/release/deps/a-[..][EXE]`
-",
-        )
+        .with_stderr_data(str![[r#"
+[COMPILING] foo v0.0.1 ([ROOT]/foo)
+[RUNNING] `rustc [..] --cfg bar`
+[RUNNING] `rustc [..] --cfg bar`
+[RUNNING] `rustc [..] --cfg bar`
+[FINISHED] `bench` profile [optimized] target(s) in [ELAPSED]s
+[EXECUTABLE] `[ROOT]/foo/target/release/deps/foo-[HASH][EXE]`
+[EXECUTABLE] `[ROOT]/foo/target/release/deps/a-[HASH][EXE]`
+
+"#]])
         .run();
 }
 
@@ -1356,62 +1261,57 @@ fn cfg_rustflags_precedence() {
         .build();
 
     p.cargo("build --lib -v")
-        .with_stderr(
-            "\
-[COMPILING] foo v0.0.1 ([..])
-[RUNNING] `rustc [..] --cfg bar[..]`
-[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [..]
-",
-        )
+        .with_stderr_data(str![[r#"
+[COMPILING] foo v0.0.1 ([ROOT]/foo)
+[RUNNING] `rustc --crate-name foo [..] --cfg bar`
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
 
     p.cargo("build --bin=a -v")
-        .with_stderr(
-            "\
-[COMPILING] foo v0.0.1 ([..])
-[RUNNING] `rustc [..] --cfg bar[..]`
-[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [..]
-",
-        )
+        .with_stderr_data(str![[r#"
+[COMPILING] foo v0.0.1 ([ROOT]/foo)
+[RUNNING] `rustc --crate-name a [..] --cfg bar`
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
 
     p.cargo("build --example=b -v")
-        .with_stderr(
-            "\
-[COMPILING] foo v0.0.1 ([..])
-[RUNNING] `rustc [..] --cfg bar[..]`
-[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [..]
-",
-        )
+        .with_stderr_data(str![[r#"
+[COMPILING] foo v0.0.1 ([ROOT]/foo)
+[RUNNING] `rustc --crate-name b [..] --cfg bar`
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
 
     p.cargo("test --no-run -v")
-        .with_stderr(
-            "\
-[COMPILING] foo v0.0.1 ([..])
-[RUNNING] `rustc [..] --cfg bar[..]`
-[RUNNING] `rustc [..] --cfg bar[..]`
-[RUNNING] `rustc [..] --cfg bar[..]`
-[FINISHED] `test` profile [unoptimized + debuginfo] target(s) in [..]
-[EXECUTABLE] `[..]/target/debug/deps/foo-[..][EXE]`
-[EXECUTABLE] `[..]/target/debug/deps/a-[..][EXE]`
-[EXECUTABLE] `[..]/target/debug/deps/c-[..][EXE]`
-",
-        )
+        .with_stderr_data(str![[r#"
+[COMPILING] foo v0.0.1 ([ROOT]/foo)
+[RUNNING] `rustc [..] --cfg bar`
+[RUNNING] `rustc [..] --cfg bar`
+[RUNNING] `rustc [..] --cfg bar`
+[FINISHED] `test` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+[EXECUTABLE] `[ROOT]/foo/target/debug/deps/foo-[HASH][EXE]`
+[EXECUTABLE] `[ROOT]/foo/target/debug/deps/a-[HASH][EXE]`
+[EXECUTABLE] `[ROOT]/foo/target/debug/deps/c-[HASH][EXE]`
+
+"#]])
         .run();
 
     p.cargo("bench --no-run -v")
-        .with_stderr(
-            "\
-[COMPILING] foo v0.0.1 ([..])
-[RUNNING] `rustc [..] --cfg bar[..]`
-[RUNNING] `rustc [..] --cfg bar[..]`
-[RUNNING] `rustc [..] --cfg bar[..]`
-[FINISHED] `bench` profile [optimized] target(s) in [..]
-[EXECUTABLE] `[..]/target/release/deps/foo-[..][EXE]`
-[EXECUTABLE] `[..]/target/release/deps/a-[..][EXE]`
-",
-        )
+        .with_stderr_data(str![[r#"
+[COMPILING] foo v0.0.1 ([ROOT]/foo)
+[RUNNING] `rustc [..] --cfg bar`
+[RUNNING] `rustc [..] --cfg bar`
+[RUNNING] `rustc [..] --cfg bar`
+[FINISHED] `bench` profile [optimized] target(s) in [ELAPSED]s
+[EXECUTABLE] `[ROOT]/foo/target/release/deps/foo-[HASH][EXE]`
+[EXECUTABLE] `[ROOT]/foo/target/release/deps/a-[HASH][EXE]`
+
+"#]])
         .run();
 }
 
@@ -1429,13 +1329,12 @@ fn target_rustflags_string_and_array_form1() {
         .build();
 
     p1.cargo("check -v")
-        .with_stderr(
-            "\
-[CHECKING] foo v0.0.1 ([..])
-[RUNNING] `rustc [..] --cfg foo[..]`
-[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [..]
-",
-        )
+        .with_stderr_data(str![[r#"
+[CHECKING] foo v0.0.1 ([ROOT]/foo)
+[RUNNING] `rustc --crate-name foo [..] --cfg foo`
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
 
     let p2 = project()
@@ -1450,13 +1349,12 @@ fn target_rustflags_string_and_array_form1() {
         .build();
 
     p2.cargo("check -v")
-        .with_stderr(
-            "\
-[CHECKING] foo v0.0.1 ([..])
-[RUNNING] `rustc [..] --cfg foo[..]`
-[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [..]
-",
-        )
+        .with_stderr_data(str![[r#"
+[CHECKING] foo v0.0.1 ([ROOT]/foo)
+[RUNNING] `rustc --crate-name foo [..] --cfg foo`
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
 }
 
@@ -1477,13 +1375,12 @@ fn target_rustflags_string_and_array_form2() {
         .build();
 
     p1.cargo("check -v")
-        .with_stderr(
-            "\
-[CHECKING] foo v0.0.1 ([..])
-[RUNNING] `rustc [..] --cfg foo[..]`
-[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [..]
-",
-        )
+        .with_stderr_data(str![[r#"
+[CHECKING] foo v0.0.1 ([ROOT]/foo)
+[RUNNING] `rustc --crate-name foo [..] --cfg foo`
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
 
     let p2 = project()
@@ -1501,13 +1398,12 @@ fn target_rustflags_string_and_array_form2() {
         .build();
 
     p2.cargo("check -v")
-        .with_stderr(
-            "\
-[CHECKING] foo v0.0.1 ([..])
-[RUNNING] `rustc [..] --cfg foo[..]`
-[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [..]
-",
-        )
+        .with_stderr_data(str![[r#"
+[CHECKING] foo v0.0.1 ([ROOT]/foo)
+[RUNNING] `rustc --crate-name foo [..] --cfg foo`
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
 }
 
@@ -1530,6 +1426,7 @@ fn two_matching_in_config() {
         .file(
             "src/main.rs",
             r#"
+                #![allow(unexpected_cfgs)]
                 fn main() {
                     if cfg!(foo = "a") {
                         println!("a");
@@ -1544,7 +1441,12 @@ fn two_matching_in_config() {
         .build();
 
     p1.cargo("run").run();
-    p1.cargo("build").with_stderr("[FINISHED] [..]").run();
+    p1.cargo("build")
+        .with_stderr_data(str![[r#"
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
 }
 
 #[cargo_test]
@@ -1554,7 +1456,12 @@ fn env_rustflags_misspelled() {
     for cmd in &["check", "build", "run", "test", "bench"] {
         p.cargo(cmd)
             .env("RUST_FLAGS", "foo")
-            .with_stderr_contains("[WARNING] Cargo does not read `RUST_FLAGS` environment variable. Did you mean `RUSTFLAGS`?")
+            .with_stderr_data(
+                "\
+[WARNING] Cargo does not read `RUST_FLAGS` environment variable. Did you mean `RUSTFLAGS`?
+...
+",
+            )
             .run();
     }
 }
@@ -1568,6 +1475,7 @@ fn env_rustflags_misspelled_build_script() {
                 [package]
                 name = "foo"
                 version = "0.0.1"
+                edition = "2021"
                 build = "build.rs"
             "#,
         )
@@ -1577,7 +1485,12 @@ fn env_rustflags_misspelled_build_script() {
 
     p.cargo("check")
         .env("RUST_FLAGS", "foo")
-        .with_stderr_contains("[WARNING] Cargo does not read `RUST_FLAGS` environment variable. Did you mean `RUSTFLAGS`?")
+        .with_stderr_data(str![[r#"
+[WARNING] Cargo does not read `RUST_FLAGS` environment variable. Did you mean `RUSTFLAGS`?
+[COMPILING] foo v0.0.1 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
 }
 
@@ -1649,7 +1562,10 @@ fn remap_path_prefix_works() {
             "RUSTFLAGS",
             format!("--remap-path-prefix={}=/foo", paths::root().display()),
         )
-        .with_stdout("/foo/home/.cargo/registry/src/[..]/bar-0.1.0/src/lib.rs")
+        .with_stdout_data(str![[r#"
+/foo/home/.cargo/registry/src/-[HASH]/bar-0.1.0/src/lib.rs
+
+"#]])
         .run();
 }
 
@@ -1669,5 +1585,58 @@ fn host_config_rustflags_with_target() {
         .arg("-Zunstable-options")
         .arg("--config")
         .arg("host.rustflags=[\"--cfg=foo\"]")
+        .run();
+}
+
+#[cargo_test]
+fn target_applies_to_host_rustflags_works() {
+    // Ensures that rustflags are passed to the target when
+    // target_applies_to_host=false
+    let p = project()
+        .file(
+            "src/lib.rs",
+            r#"#[cfg(feature = "flag")] compile_error!("flag passed");"#,
+        )
+        .build();
+
+    // Use RUSTFLAGS to pass an argument that will generate an error.
+    p.cargo("check")
+        .masquerade_as_nightly_cargo(&["target-applies-to-host"])
+        .arg("-Ztarget-applies-to-host")
+        .env("CARGO_TARGET_APPLIES_TO_HOST", "false")
+        .env("RUSTFLAGS", r#"--cfg feature="flag""#)
+        .with_status(101)
+        .with_stderr_data(
+            "[CHECKING] foo v0.0.1 ([ROOT]/foo)
+[ERROR] flag passed
+...",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn target_applies_to_host_rustdocflags_works() {
+    // Ensures that rustflags are passed to the target when
+    // target_applies_to_host=false
+    let p = project()
+        .file(
+            "src/lib.rs",
+            r#"#[cfg(feature = "flag")] compile_error!("flag passed");"#,
+        )
+        .build();
+
+    // Use RUSTFLAGS to pass an argument that would generate an error
+    // but it is ignored.
+    p.cargo("doc")
+        .masquerade_as_nightly_cargo(&["target-applies-to-host"])
+        .arg("-Ztarget-applies-to-host")
+        .env("CARGO_TARGET_APPLIES_TO_HOST", "false")
+        .env("RUSTDOCFLAGS", r#"--cfg feature="flag""#)
+        .with_status(101)
+        .with_stderr_data(
+            "[DOCUMENTING] foo v0.0.1 ([ROOT]/foo)
+[ERROR] flag passed
+...",
+        )
         .run();
 }
