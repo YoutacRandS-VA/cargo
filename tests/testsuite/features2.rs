@@ -1,14 +1,14 @@
 //! Tests for the new feature resolver.
 
+use std::fs::File;
+
 use cargo_test_support::cross_compile::{self, alternate};
-use cargo_test_support::install::cargo_home;
-use cargo_test_support::paths::CargoPathExt;
+use cargo_test_support::paths;
 use cargo_test_support::prelude::*;
 use cargo_test_support::publish::validate_crate_contents;
 use cargo_test_support::registry::{Dependency, Package};
 use cargo_test_support::str;
 use cargo_test_support::{basic_manifest, cargo_process, project, rustc_host, Project};
-use std::fs::File;
 
 /// Switches Cargo.toml to use `resolver = "2"`.
 pub fn switch_to_resolver_2(p: &Project) {
@@ -2208,8 +2208,8 @@ fn minimal_download() {
         .build();
 
     let clear = || {
-        cargo_home().join("registry/cache").rm_rf();
-        cargo_home().join("registry/src").rm_rf();
+        paths::cargo_home().join("registry/cache").rm_rf();
+        paths::cargo_home().join("registry/src").rm_rf();
         p.build_dir().rm_rf();
     };
 

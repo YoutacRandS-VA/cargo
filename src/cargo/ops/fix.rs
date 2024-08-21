@@ -97,6 +97,7 @@ pub struct FixOptions {
     pub allow_no_vcs: bool,
     pub allow_staged: bool,
     pub broken_code: bool,
+    pub requested_lockfile_path: Option<PathBuf>,
 }
 
 pub fn fix(
@@ -121,6 +122,7 @@ pub fn fix(
     }
     let mut ws = Workspace::new(&root_manifest, gctx)?;
     ws.set_resolve_honors_rust_version(Some(original_ws.resolve_honors_rust_version()));
+    ws.set_requested_lockfile_path(opts.requested_lockfile_path.clone());
 
     // Spin up our lock server, which our subprocesses will use to synchronize fixes.
     let lock_server = LockServer::new()?;
@@ -443,7 +445,7 @@ fn add_feature_for_unused_deps(
     let manifest = pkg.manifest();
 
     let activated_opt_deps = manifest
-        .resolved_toml()
+        .normalized_toml()
         .features()
         .map(|map| {
             map.values()
@@ -479,7 +481,7 @@ fn add_feature_for_unused_deps(
                 // only way to guarantee an optional dependency is available for use.
                 //
                 // The way we avoid implicitly creating features in Edition2024 is we remove the
-                // dependency from `resolved_toml` if there is no `dep:` syntax as that is the only
+                // dependency from `normalized_toml` if there is no `dep:` syntax as that is the only
                 // syntax that suppresses the creation of the implicit feature.
                 for (feature_name, activations) in features.iter_mut() {
                     let Some(activations) = activations.as_array_mut() else {

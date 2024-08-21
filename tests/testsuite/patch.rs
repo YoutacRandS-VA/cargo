@@ -1,11 +1,12 @@
 //! Tests for `[patch]` table source replacement.
 
+use std::fs;
+
 use cargo_test_support::git;
 use cargo_test_support::paths;
 use cargo_test_support::prelude::*;
 use cargo_test_support::registry::{self, Package};
 use cargo_test_support::{basic_manifest, project, str};
-use std::fs;
 
 #[cargo_test]
 fn replace() {
@@ -3026,4 +3027,50 @@ foo v0.0.0 ([ROOT]/foo)
         .run();
 
     assert_eq!(p.read_file("Cargo.lock"), p.read_file("Cargo.lock.orig"));
+}
+
+#[cargo_test]
+fn patch_with_base() {
+    let bar = project()
+        .at("bar")
+        .file("Cargo.toml", &basic_manifest("bar", "0.5.0"))
+        .file("src/lib.rs", "pub fn hello() {}")
+        .build();
+    Package::new("bar", "0.5.0").publish();
+
+    let p = project()
+        .file(
+            ".cargo/config.toml",
+            &format!(
+                r#"
+                    [path-bases]
+                    test = '{}'
+                "#,
+                bar.root().parent().unwrap().display()
+            ),
+        )
+        .file(
+            "Cargo.toml",
+            r#"
+                cargo-features = ["path-bases"]
+
+                [package]
+                name = "foo"
+                version = "0.5.0"
+                authors = ["wycats@example.com"]
+                edition = "2018"
+
+                [dependencies]
+                bar = "0.5.0"
+
+                [patch.crates-io]
+                bar = { base = 'test', path = 'bar' }
+            "#,
+        )
+        .file("src/lib.rs", "use bar::hello as _;")
+        .build();
+
+    p.cargo("build -v")
+        .masquerade_as_nightly_cargo(&["path-bases"])
+        .run();
 }

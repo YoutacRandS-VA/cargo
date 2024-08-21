@@ -1,5 +1,6 @@
 //! Tests for the `cargo run` command.
 
+use cargo_test_support::prelude::*;
 use cargo_test_support::{
     basic_bin_manifest, basic_lib_manifest, basic_manifest, project, str, Project,
 };
@@ -1602,7 +1603,7 @@ fn print_env_verbose() {
 #[cargo_test]
 #[cfg(target_os = "macos")]
 fn run_link_system_path_macos() {
-    use cargo_test_support::paths::{self, CargoPathExt};
+    use cargo_test_support::paths;
     use std::fs;
     // Check that the default system library path is honored.
     // First, build a shared library that will be accessed from

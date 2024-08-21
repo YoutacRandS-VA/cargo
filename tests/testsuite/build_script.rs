@@ -1,8 +1,12 @@
 //! Tests for build.rs scripts.
 
+use std::env;
+use std::fs;
+use std::io;
+use std::thread;
+
 use cargo_test_support::compare::assert_e2e;
-use cargo_test_support::install::cargo_home;
-use cargo_test_support::paths::CargoPathExt;
+use cargo_test_support::paths::cargo_home;
 use cargo_test_support::prelude::*;
 use cargo_test_support::registry::Package;
 use cargo_test_support::str;
@@ -10,13 +14,8 @@ use cargo_test_support::tools;
 use cargo_test_support::{
     basic_manifest, cargo_exe, cross_compile, is_coarse_mtime, project, project_in,
 };
-use cargo_test_support::{rustc_host, sleep_ms, slow_cpu_multiplier, symlink_supported};
+use cargo_test_support::{git, rustc_host, sleep_ms, slow_cpu_multiplier, symlink_supported};
 use cargo_util::paths::{self, remove_dir_all};
-use snapbox::data::Inline;
-use std::env;
-use std::fs;
-use std::io;
-use std::thread;
 
 #[cargo_test]
 fn custom_build_script_failed() {
@@ -2872,7 +2871,7 @@ fn env_test() {
 [RUNNING] `[ROOT]/foo/target/debug/deps/foo-[HASH][EXE]`
 [RUNNING] `[ROOT]/foo/target/debug/deps/test-[HASH][EXE]`
 [DOCTEST] foo
-[RUNNING] `rustdoc --edition=2015 --crate-type lib --crate-name foo[..]`
+[RUNNING] `rustdoc --edition=2015 --crate-type lib --color auto --crate-name foo[..]`
 
 "#]])
         .with_stdout_data(str![[r#"
@@ -4562,7 +4561,7 @@ fn rename_with_link_search_path_cross() {
     );
 }
 
-fn _rename_with_link_search_path(cross: bool, expected: Inline) {
+fn _rename_with_link_search_path(cross: bool, expected: impl IntoData) {
     let target_arg = if cross {
         format!(" --target={}", cross_compile::alternate())
     } else {
@@ -5775,5 +5774,65 @@ fn build_script_rerun_when_target_rustflags_change() {
 hello
 
 "#]])
+        .run();
+}
+
+#[cargo_test]
+fn links_overrides_with_target_applies_to_host() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "mylib-sys"
+                edition = "2021"
+                version = "0.0.1"
+                authors = []
+                links = "mylib"
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .file("build.rs", "bad file")
+        .build();
+
+    p.cargo("build -v")
+        .masquerade_as_nightly_cargo(&["target-applies-to-host"])
+        .args(&[
+            "-Ztarget-applies-to-host",
+            "--config",
+            "target-applies-to-host=false",
+        ])
+        .args(&[
+            "--config",
+            &format!(r#"target.{}.mylib.rustc-link-search=["foo"]"#, rustc_host()),
+        ])
+        .with_stderr_data(str![[r#"
+[COMPILING] mylib-sys v0.0.1 ([ROOT]/foo)
+[RUNNING] `rustc --crate-name mylib_sys [..] -L foo`
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn directory_with_leading_underscore() {
+    let p: cargo_test_support::Project = git::new("foo", |p| {
+        p.no_manifest()
+            .file(
+                "_foo/foo/Cargo.toml",
+                r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+                edition = "2021"
+                build = "build.rs"
+            "#,
+            )
+            .file("_foo/foo/src/main.rs", "fn main() {}")
+            .file("_foo/foo/build.rs", "fn main() { }")
+    });
+    p.cargo("build --manifest-path=_foo/foo/Cargo.toml -v")
+        .with_status(0)
         .run();
 }

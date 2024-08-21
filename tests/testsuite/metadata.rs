@@ -1,7 +1,6 @@
 //! Tests for the `cargo metadata` command.
 
-use cargo_test_support::install::cargo_home;
-use cargo_test_support::paths::CargoPathExt;
+use cargo_test_support::paths;
 use cargo_test_support::prelude::*;
 use cargo_test_support::registry::Package;
 use cargo_test_support::{
@@ -88,7 +87,7 @@ fn cargo_metadata_simple() {
   "workspace_root": "[ROOT]/foo"
 }
 "#]]
-            .json(),
+            .is_json(),
         )
         .run();
 }
@@ -201,7 +200,7 @@ crate-type = ["lib", "staticlib"]
   "workspace_root": "[ROOT]/foo"
 }
 "#]]
-            .json(),
+            .is_json(),
         )
         .run();
 }
@@ -304,7 +303,7 @@ optional_feat = []
   "workspace_root": "[ROOT]/foo"
 }
 "#]]
-            .json(),
+            .is_json(),
         )
         .run();
 }
@@ -623,7 +622,7 @@ fn cargo_metadata_with_deps_and_version() {
   "workspace_root": "[ROOT]/foo"
 }
 "#]]
-            .json(),
+            .is_json(),
         )
         .run();
 }
@@ -730,7 +729,7 @@ name = "ex"
   "workspace_root": "[ROOT]/foo"
 }
 "#]]
-            .json(),
+            .is_json(),
         )
         .run();
 }
@@ -839,7 +838,7 @@ crate-type = ["rlib", "dylib"]
   "workspace_root": "[ROOT]/foo"
 }
 "#]]
-            .json(),
+            .is_json(),
         )
         .run();
 }
@@ -1001,7 +1000,7 @@ fn workspace_metadata() {
   "workspace_root": "[ROOT]/foo"
 }
 "#]]
-            .json(),
+            .is_json(),
         )
         .run();
 }
@@ -1225,7 +1224,7 @@ fn workspace_metadata_with_dependencies_no_deps() {
   "workspace_root": "[ROOT]/foo"
 }
 "#]]
-            .json(),
+            .is_json(),
         )
         .run();
 }
@@ -1861,7 +1860,7 @@ fn workspace_metadata_with_dependencies_and_resolve() {
   "workspace_root": "[ROOT]/foo"
 }
 "#]]
-            .json(),
+            .is_json(),
         )
         .run();
 }
@@ -1876,7 +1875,7 @@ fn cargo_metadata_with_invalid_manifest() {
 [ERROR] failed to parse manifest at `[ROOT]/foo/Cargo.toml`
 
 Caused by:
-  virtual manifests must be configured with [workspace]
+  manifest is missing either a `[package]` or a `[workspace]`
 
 "#]])
         .run();
@@ -2095,7 +2094,7 @@ fn cargo_metadata_no_deps_path_to_cargo_toml_relative() {
   "workspace_root": "[ROOT]/foo"
 }
 "#]]
-            .json(),
+            .is_json(),
         )
         .run();
 }
@@ -2171,7 +2170,7 @@ fn cargo_metadata_no_deps_path_to_cargo_toml_absolute() {
   "workspace_root": "[ROOT]/foo"
 }
 "#]]
-            .json(),
+            .is_json(),
         )
         .run();
 }
@@ -2280,7 +2279,7 @@ fn cargo_metadata_no_deps_cwd() {
   "workspace_root": "[ROOT]/foo"
 }
 "#]]
-            .json(),
+            .is_json(),
         )
         .run();
 }
@@ -2420,7 +2419,7 @@ fn package_metadata() {
   "workspace_root": "[ROOT]/foo"
 }
 "#]]
-            .json(),
+            .is_json(),
         )
         .run();
 }
@@ -2514,7 +2513,7 @@ fn package_publish() {
   "workspace_root": "[ROOT]/foo"
 }
 "#]]
-            .json(),
+            .is_json(),
         )
         .run();
 }
@@ -2611,7 +2610,7 @@ fn cargo_metadata_path_to_cargo_toml_project() {
   "workspace_root": "[ROOT]/foo/target/package/bar-0.5.0"
 }
 "#]]
-            .json(),
+            .is_json(),
         )
         .run();
 }
@@ -2703,7 +2702,7 @@ fn package_edition_2018() {
   "workspace_root": "[ROOT]/foo"
 }
 "#]]
-            .json(),
+            .is_json(),
         )
         .run();
 }
@@ -2855,7 +2854,7 @@ fn target_edition_2018() {
   "workspace_root": "[ROOT]/foo"
 }
 "#]]
-            .json(),
+            .is_json(),
         )
         .run();
 }
@@ -3095,7 +3094,7 @@ fn rename_dependency() {
   "workspace_root": "[ROOT]/foo"
 }
 "#]]
-            .json(),
+            .is_json(),
         )
         .run();
 }
@@ -3200,7 +3199,7 @@ fn metadata_links() {
   "workspace_root": "[ROOT]/foo"
 }
 "#]]
-            .json(),
+            .is_json(),
         )
         .run()
 }
@@ -3307,7 +3306,7 @@ fn deps_with_bin_only() {
   "workspace_root": "[ROOT]/foo"
 }
 "#]]
-            .json(),
+            .is_json(),
         )
         .run();
 }
@@ -3640,8 +3639,8 @@ fn filter_platform() {
     // We're going to be checking that we don't download excessively,
     // so we need to ensure that downloads will happen.
     let clear = || {
-        cargo_home().join("registry/cache").rm_rf();
-        cargo_home().join("registry/src").rm_rf();
+        paths::cargo_home().join("registry/cache").rm_rf();
+        paths::cargo_home().join("registry/src").rm_rf();
         p.build_dir().rm_rf();
     };
 
@@ -4150,7 +4149,7 @@ fn dep_kinds() {
   "workspace_root": "[ROOT]/foo"
 }
 "#]]
-            .json(),
+            .is_json(),
         )
         .run();
 }
@@ -4269,7 +4268,7 @@ fn dep_kinds_workspace() {
   "workspace_root": "[ROOT]/foo"
 }
 "#]]
-            .json(),
+            .is_json(),
         )
         .run();
 }
@@ -4537,7 +4536,7 @@ fn workspace_metadata_with_dependencies_no_deps_artifact() {
   "workspace_root": "[ROOT]/foo"
 }
 "#]]
-            .json(),
+            .is_json(),
         )
         .run();
 }
@@ -4820,7 +4819,7 @@ fn versionless_packages() {
   "workspace_root": "[ROOT]/foo"
 }
 "#]]
-            .json(),
+            .is_json(),
         )
         .run();
 }
@@ -4930,7 +4929,7 @@ local-time = 1979-05-27
   "workspace_root": "[ROOT]/foo"
 }
 "#]]
-            .json(),
+            .is_json(),
         )
         .run();
 }

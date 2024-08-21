@@ -12,7 +12,7 @@ pub use self::cargo_new::{init, new, NewOptions, NewProjectKind, VersionControl}
 pub use self::cargo_output_metadata::{output_metadata, ExportInfo, OutputMetadataOptions};
 pub use self::cargo_package::{check_yanked, package, package_one, PackageOpts};
 pub use self::cargo_pkgid::pkgid;
-pub use self::cargo_read_manifest::{read_package, read_packages};
+pub use self::cargo_read_manifest::read_package;
 pub use self::cargo_run::run;
 pub use self::cargo_test::{run_benches, run_tests, TestOptions};
 pub use self::cargo_uninstall::uninstall;
@@ -24,6 +24,7 @@ pub use self::cargo_update::write_manifest_upgrades;
 pub use self::cargo_update::UpdateOptions;
 pub use self::fix::{fix, fix_exec_rustc, fix_get_proxy_lock_addr, FixOptions};
 pub use self::lockfile::{load_pkg_lockfile, resolve_to_string, write_pkg_lockfile};
+pub use self::registry::info;
 pub use self::registry::modify_owners;
 pub use self::registry::publish;
 pub use self::registry::registry_login;

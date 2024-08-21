@@ -8,7 +8,7 @@ use std::process::Stdio;
 use std::str;
 
 use cargo_test_support::basic_manifest;
-use cargo_test_support::paths::CargoPathExt;
+use cargo_test_support::prelude::*;
 use cargo_test_support::registry::Package;
 use cargo_test_support::str;
 use cargo_test_support::tools::echo_subcommand;
@@ -258,6 +258,7 @@ Similar, but not identical to, build
         .with_stdout_data(str![[r#"
 ...
     biuld
+...
     build                Compile a local package and all of its dependencies
 ..."#]])
         .run();

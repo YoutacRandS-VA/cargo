@@ -7,19 +7,25 @@ use std::sync::Arc;
 use std::task::Poll;
 
 use crate::core::compiler::{BuildConfig, CompileMode, DefaultExecutor, Executor};
+use crate::core::dependency::DepKind;
 use crate::core::manifest::Target;
 use crate::core::resolver::CliFeatures;
 use crate::core::resolver::HasDevUnits;
 use crate::core::{Feature, PackageIdSpecQuery, Shell, Verbosity, Workspace};
 use crate::core::{Package, PackageId, PackageSet, Resolve, SourceId};
-use crate::sources::PathSource;
+use crate::ops::lockfile::LOCKFILE_NAME;
+use crate::ops::registry::{infer_registry, RegistryOrIndex};
+use crate::sources::registry::index::{IndexPackage, RegistryDependency};
+use crate::sources::{PathSource, CRATES_IO_REGISTRY};
 use crate::util::cache_lock::CacheLockMode;
 use crate::util::context::JobsConfig;
 use crate::util::errors::CargoResult;
 use crate::util::toml::prepare_for_publish;
-use crate::util::{self, human_readable_bytes, restricted_names, FileLock, GlobalContext};
+use crate::util::{
+    self, human_readable_bytes, restricted_names, FileLock, Filesystem, GlobalContext, Graph,
+};
 use crate::{drop_println, ops};
-use anyhow::Context as _;
+use anyhow::{bail, Context as _};
 use cargo_util::paths;
 use flate2::read::GzDecoder;
 use flate2::{Compression, GzBuilder};
@@ -40,6 +46,7 @@ pub struct PackageOpts<'gctx> {
     pub to_package: ops::Packages,
     pub targets: Vec<String>,
     pub cli_features: CliFeatures,
+    pub reg_or_index: Option<ops::RegistryOrIndex>,
 }
 
 const ORIGINAL_MANIFEST_FILE: &str = "Cargo.toml.orig";
@@ -101,10 +108,10 @@ pub fn package_one(
     assert!(!opts.list);
 
     let ar_files = prepare_archive(ws, pkg, opts)?;
-    let tarball = create_package(ws, pkg, ar_files)?;
+    let tarball = create_package(ws, pkg, ar_files, None)?;
 
     if opts.verify {
-        run_verify(ws, pkg, &tarball, opts)?;
+        run_verify(ws, pkg, &tarball, None, opts)?;
     }
 
     Ok(tarball)
@@ -115,6 +122,7 @@ fn create_package(
     ws: &Workspace<'_>,
     pkg: &Package,
     ar_files: Vec<ArchiveFile>,
+    local_reg: Option<&TmpRegistry<'_>>,
 ) -> CargoResult<FileLock> {
     let gctx = ws.gctx();
     let filecount = ar_files.len();
@@ -138,14 +146,14 @@ fn create_package(
     gctx.shell()
         .status("Packaging", pkg.package_id().to_string())?;
     dst.file().set_len(0)?;
-    let uncompressed_size = tar(ws, pkg, ar_files, dst.file(), &filename)
-        .with_context(|| "failed to prepare local package for uploading")?;
+    let uncompressed_size = tar(ws, pkg, local_reg, ar_files, dst.file(), &filename)
+        .context("failed to prepare local package for uploading")?;
 
     dst.seek(SeekFrom::Start(0))?;
     let src_path = dst.path();
     let dst_path = dst.parent().join(&filename);
     fs::rename(&src_path, &dst_path)
-        .with_context(|| "failed to move temporary tarball into final location")?;
+        .context("failed to move temporary tarball into final location")?;
 
     let dst_metadata = dst
         .file()
@@ -166,7 +174,11 @@ fn create_package(
     return Ok(dst);
 }
 
-pub fn package(ws: &Workspace<'_>, opts: &PackageOpts<'_>) -> CargoResult<Option<Vec<FileLock>>> {
+/// Packages an entire workspace.
+///
+/// Returns the generated package files. If `opts.list` is true, skips
+/// generating package files and returns an empty list.
+pub fn package(ws: &Workspace<'_>, opts: &PackageOpts<'_>) -> CargoResult<Vec<FileLock>> {
     let specs = &opts.to_package.to_package_id_specs(ws)?;
     // If -p is used, we should check spec is matched with the members (See #13719)
     if let ops::Packages::Packages(_) = opts.to_package {
@@ -176,9 +188,13 @@ pub fn package(ws: &Workspace<'_>, opts: &PackageOpts<'_>) -> CargoResult<Option
         }
     }
     let pkgs = ws.members_with_features(specs, &opts.cli_features)?;
-    let mut dsts = Vec::with_capacity(pkgs.len());
 
-    if ws.root().join("Cargo.lock").exists() {
+    if ws
+        .lock_root()
+        .as_path_unlocked()
+        .join(LOCKFILE_NAME)
+        .exists()
+    {
         // Make sure the Cargo.lock is up-to-date and valid.
         let dry_run = false;
         let _ = ops::resolve_ws(ws, dry_run)?;
@@ -186,34 +202,165 @@ pub fn package(ws: &Workspace<'_>, opts: &PackageOpts<'_>) -> CargoResult<Option
         // below, and will be validated during the verification step.
     }
 
-    for (pkg, cli_features) in pkgs {
+    let deps = local_deps(pkgs.iter().map(|(p, f)| ((*p).clone(), f.clone())));
+    let just_pkgs: Vec<_> = pkgs.iter().map(|p| p.0).collect();
+
+    // The publish registry doesn't matter unless there are local dependencies,
+    // so only try to get one if we need it. If they explicitly passed a
+    // registry on the CLI, we check it no matter what.
+    let sid = if deps.has_no_dependencies() && opts.reg_or_index.is_none() {
+        None
+    } else {
+        let sid = get_registry(ws.gctx(), &just_pkgs, opts.reg_or_index.clone())?;
+        debug!("packaging for registry {}", sid);
+        Some(sid)
+    };
+
+    let mut local_reg = if ws.gctx().cli_unstable().package_workspace {
+        let reg_dir = ws.target_dir().join("package").join("tmp-registry");
+        sid.map(|sid| TmpRegistry::new(ws.gctx(), reg_dir, sid))
+            .transpose()?
+    } else {
+        None
+    };
+
+    // Packages need to be created in dependency order, because dependencies must
+    // be added to our local overlay before we can create lockfiles that depend on them.
+    let sorted_pkgs = deps.sort();
+    let mut outputs: Vec<(Package, PackageOpts<'_>, FileLock)> = Vec::new();
+    for (pkg, cli_features) in sorted_pkgs {
         let opts = PackageOpts {
+            cli_features: cli_features.clone(),
             to_package: ops::Packages::Default,
-            cli_features,
             ..opts.clone()
         };
-        let ar_files = prepare_archive(ws, pkg, &opts)?;
+        let ar_files = prepare_archive(ws, &pkg, &opts)?;
 
         if opts.list {
-            for ar_file in ar_files {
+            for ar_file in &ar_files {
                 drop_println!(ws.gctx(), "{}", ar_file.rel_str);
             }
         } else {
-            let tarball = create_package(ws, pkg, ar_files)?;
-            if opts.verify {
-                run_verify(ws, pkg, &tarball, &opts)
-                    .with_context(|| "failed to verify package tarball")?;
+            let tarball = create_package(ws, &pkg, ar_files, local_reg.as_ref())?;
+            if let Some(local_reg) = local_reg.as_mut() {
+                if pkg.publish() != &Some(Vec::new()) {
+                    local_reg.add_package(ws, &pkg, &tarball)?;
+                }
             }
-            dsts.push(tarball);
+            outputs.push((pkg, opts, tarball));
         }
     }
 
-    if opts.list {
-        // We're just listing, so there's no file output
-        Ok(None)
-    } else {
-        Ok(Some(dsts))
+    // Verify all packages in the workspace. This can be done in any order, since the dependencies
+    // are already all in the local registry overlay.
+    if opts.verify {
+        for (pkg, opts, tarball) in &outputs {
+            run_verify(ws, pkg, tarball, local_reg.as_ref(), opts)
+                .context("failed to verify package tarball")?
+        }
     }
+
+    Ok(outputs.into_iter().map(|x| x.2).collect())
+}
+
+/// Determine which registry the packages are for.
+///
+/// The registry only affects the built packages if there are dependencies within the
+/// packages that we're packaging: if we're packaging foo-bin and foo-lib, and foo-bin
+/// depends on foo-lib, then the foo-lib entry in foo-bin's lockfile will depend on the
+/// registry that we're building packages for.
+fn get_registry(
+    gctx: &GlobalContext,
+    pkgs: &[&Package],
+    reg_or_index: Option<RegistryOrIndex>,
+) -> CargoResult<SourceId> {
+    let reg_or_index = match reg_or_index.clone() {
+        Some(r) => Some(r),
+        None => infer_registry(pkgs)?,
+    };
+
+    // Validate the registry against the packages' allow-lists.
+    let reg = reg_or_index
+        .clone()
+        .unwrap_or_else(|| RegistryOrIndex::Registry(CRATES_IO_REGISTRY.to_owned()));
+    if let RegistryOrIndex::Registry(reg_name) = reg {
+        for pkg in pkgs {
+            if let Some(allowed) = pkg.publish().as_ref() {
+                // If allowed is empty (i.e. package.publish is false), we let it slide.
+                // This allows packaging unpublishable packages (although packaging might
+                // fail later if the unpublishable package is a dependency of something else).
+                if !allowed.is_empty() && !allowed.iter().any(|a| a == &reg_name) {
+                    bail!(
+                        "`{}` cannot be packaged.\n\
+                         The registry `{}` is not listed in the `package.publish` value in Cargo.toml.",
+                        pkg.name(),
+                        reg_name
+                    );
+                }
+            }
+        }
+    }
+    Ok(ops::registry::get_source_id(gctx, reg_or_index.as_ref())?.replacement)
+}
+
+/// Just the part of the dependency graph that's between the packages we're packaging.
+/// (Is the package name a good key? Does it uniquely identify packages?)
+#[derive(Clone, Debug, Default)]
+struct LocalDependencies {
+    packages: HashMap<PackageId, (Package, CliFeatures)>,
+    graph: Graph<PackageId, ()>,
+}
+
+impl LocalDependencies {
+    fn sort(&self) -> Vec<(Package, CliFeatures)> {
+        self.graph
+            .sort()
+            .into_iter()
+            .map(|name| self.packages[&name].clone())
+            .collect()
+    }
+
+    pub fn has_no_dependencies(&self) -> bool {
+        self.graph
+            .iter()
+            .all(|node| self.graph.edges(node).next().is_none())
+    }
+}
+
+/// Build just the part of the dependency graph that's between the given packages,
+/// ignoring dev dependencies.
+///
+/// We assume that the packages all belong to this workspace.
+fn local_deps(packages: impl Iterator<Item = (Package, CliFeatures)>) -> LocalDependencies {
+    let packages: HashMap<PackageId, (Package, CliFeatures)> =
+        packages.map(|pkg| (pkg.0.package_id(), pkg)).collect();
+
+    // Dependencies have source ids but not package ids. We draw an edge
+    // whenever a dependency's source id matches one of our packages. This is
+    // wrong in general because it doesn't require (e.g.) versions to match. But
+    // since we're working only with path dependencies here, it should be fine.
+    let source_to_pkg: HashMap<_, _> = packages
+        .keys()
+        .map(|pkg_id| (pkg_id.source_id(), *pkg_id))
+        .collect();
+
+    let mut graph = Graph::new();
+    for (pkg, _features) in packages.values() {
+        graph.add(pkg.package_id());
+        for dep in pkg.dependencies() {
+            // Ignore local dev-dependencies because they aren't needed for intra-workspace
+            // lockfile generation or verification as they get stripped on publish.
+            if dep.kind() == DepKind::Development || !dep.source_id().is_path() {
+                continue;
+            };
+
+            if let Some(dep_pkg) = source_to_pkg.get(&dep.source_id()) {
+                graph.link(pkg.package_id(), *dep_pkg);
+            }
+        }
+    }
+
+    LocalDependencies { packages, graph }
 }
 
 /// Performs pre-archiving checks and builds a list of files to archive.
@@ -483,12 +630,27 @@ fn error_custom_build_file_not_in_package(
 }
 
 /// Construct `Cargo.lock` for the package to be published.
-fn build_lock(ws: &Workspace<'_>, publish_pkg: &Package) -> CargoResult<String> {
+fn build_lock(
+    ws: &Workspace<'_>,
+    publish_pkg: &Package,
+    local_reg: Option<&TmpRegistry<'_>>,
+) -> CargoResult<String> {
     let gctx = ws.gctx();
     let orig_resolve = ops::load_pkg_lockfile(ws)?;
 
-    let tmp_ws = Workspace::ephemeral(publish_pkg.clone(), ws.gctx(), None, true)?;
-    let mut tmp_reg = ws.package_registry()?;
+    let mut tmp_ws = Workspace::ephemeral(publish_pkg.clone(), ws.gctx(), None, true)?;
+
+    // The local registry is an overlay used for simulating workspace packages
+    // that are supposed to be in the published registry, but that aren't there
+    // yet.
+    if let Some(local_reg) = local_reg {
+        tmp_ws.add_local_overlay(
+            local_reg.upstream,
+            local_reg.root.as_path_unlocked().to_owned(),
+        );
+    }
+    let mut tmp_reg = tmp_ws.package_registry()?;
+
     let mut new_resolve = ops::resolve_with_previous(
         &mut tmp_reg,
         &tmp_ws,
@@ -499,6 +661,7 @@ fn build_lock(ws: &Workspace<'_>, publish_pkg: &Package) -> CargoResult<String> 
         &[],
         true,
     )?;
+
     let pkg_set = ops::get_resolved_packages(&new_resolve, tmp_reg)?;
 
     if let Some(orig_resolve) = orig_resolve {
@@ -583,10 +746,12 @@ fn check_repo_state(
                         .and_then(|p| p.to_str())
                         .unwrap_or("")
                         .replace("\\", "/");
-                    return Ok(Some(VcsInfo {
-                        git: git(p, src_files, &repo, &opts)?,
-                        path_in_vcs,
-                    }));
+                    let Some(git) = git(p, src_files, &repo, &opts)? else {
+                        // If the git repo lacks essensial field like `sha1`, and since this field exists from the beginning,
+                        // then don't generate the corresponding file in order to maintain consistency with past behavior.
+                        return Ok(None);
+                    };
+                    return Ok(Some(VcsInfo { git, path_in_vcs }));
                 }
             }
             gctx.shell().verbose(|shell| {
@@ -612,7 +777,7 @@ fn check_repo_state(
         src_files: &[PathBuf],
         repo: &git2::Repository,
         opts: &PackageOpts<'_>,
-    ) -> CargoResult<GitVcsInfo> {
+    ) -> CargoResult<Option<GitVcsInfo>> {
         // This is a collection of any dirty or untracked files. This covers:
         // - new/modified/deleted/renamed/type change (index or worktree)
         // - untracked files (which are "new" worktree files)
@@ -639,11 +804,16 @@ fn check_repo_state(
             .collect();
         let dirty = !dirty_src_files.is_empty();
         if !dirty || opts.allow_dirty {
+            // Must check whetherthe repo has no commit firstly, otherwise `revparse_single` would fail on bare commit repo.
+            // Due to lacking the `sha1` field, it's better not record the `GitVcsInfo` for consistency.
+            if repo.is_empty()? {
+                return Ok(None);
+            }
             let rev_obj = repo.revparse_single("HEAD")?;
-            Ok(GitVcsInfo {
+            Ok(Some(GitVcsInfo {
                 sha1: rev_obj.id().to_string(),
                 dirty,
-            })
+            }))
         } else {
             anyhow::bail!(
                 "{} files in the working directory contain changes that were \
@@ -712,6 +882,7 @@ fn check_repo_state(
 fn tar(
     ws: &Workspace<'_>,
     pkg: &Package,
+    local_reg: Option<&TmpRegistry<'_>>,
     ar_files: Vec<ArchiveFile>,
     dst: &File,
     filename: &str,
@@ -732,7 +903,7 @@ fn tar(
         .iter()
         .map(|ar_file| ar_file.rel_path.clone())
         .collect::<Vec<_>>();
-    let publish_pkg = prepare_for_publish(pkg, ws, &included)?;
+    let publish_pkg = prepare_for_publish(pkg, ws, Some(&included))?;
 
     let mut uncompressed_size = 0;
     for ar_file in ar_files {
@@ -763,8 +934,8 @@ fn tar(
             }
             FileContents::Generated(generated_kind) => {
                 let contents = match generated_kind {
-                    GeneratedFile::Manifest => publish_pkg.manifest().to_resolved_contents()?,
-                    GeneratedFile::Lockfile => build_lock(ws, &publish_pkg)?,
+                    GeneratedFile::Manifest => publish_pkg.manifest().to_normalized_contents()?,
+                    GeneratedFile::Lockfile => build_lock(ws, &publish_pkg, local_reg)?,
                     GeneratedFile::VcsInfo(ref s) => serde_json::to_string_pretty(s)?,
                 };
                 header.set_entry_type(EntryType::file());
@@ -920,12 +1091,14 @@ fn run_verify(
     ws: &Workspace<'_>,
     pkg: &Package,
     tar: &FileLock,
+    local_reg: Option<&TmpRegistry<'_>>,
     opts: &PackageOpts<'_>,
 ) -> CargoResult<()> {
     let gctx = ws.gctx();
 
     gctx.shell().status("Verifying", pkg)?;
 
+    tar.file().seek(SeekFrom::Start(0))?;
     let f = GzDecoder::new(tar.file());
     let dst = tar
         .parent()
@@ -945,7 +1118,13 @@ fn run_verify(
     let mut src = PathSource::new(&dst, id, ws.gctx());
     let new_pkg = src.root_package()?;
     let pkg_fingerprint = hash_all(&dst)?;
-    let ws = Workspace::ephemeral(new_pkg, gctx, None, true)?;
+    let mut ws = Workspace::ephemeral(new_pkg, gctx, None, true)?;
+    if let Some(local_reg) = local_reg {
+        ws.add_local_overlay(
+            local_reg.upstream,
+            local_reg.root.as_path_unlocked().to_owned(),
+        );
+    }
 
     let rustc_args = if pkg
         .manifest()
@@ -1095,4 +1274,117 @@ fn check_filename(file: &Path, shell: &mut Shell) -> CargoResult<()> {
         ))?;
     }
     Ok(())
+}
+
+/// Manages a temporary local registry that we use to overlay our new packages on the
+/// upstream registry. This way we can build lockfiles that depend on the new packages even
+/// before they're published.
+struct TmpRegistry<'a> {
+    gctx: &'a GlobalContext,
+    upstream: SourceId,
+    root: Filesystem,
+    _lock: FileLock,
+}
+
+impl<'a> TmpRegistry<'a> {
+    fn new(gctx: &'a GlobalContext, root: Filesystem, upstream: SourceId) -> CargoResult<Self> {
+        root.create_dir()?;
+        let _lock = root.open_rw_exclusive_create(".cargo-lock", gctx, "temporary registry")?;
+        let slf = Self {
+            gctx,
+            root,
+            upstream,
+            _lock,
+        };
+        // If there's an old temporary registry, delete it.
+        let index_path = slf.index_path().into_path_unlocked();
+        if index_path.exists() {
+            paths::remove_dir_all(index_path)?;
+        }
+        slf.index_path().create_dir()?;
+        Ok(slf)
+    }
+
+    fn index_path(&self) -> Filesystem {
+        self.root.join("index")
+    }
+
+    fn add_package(
+        &mut self,
+        ws: &Workspace<'_>,
+        package: &Package,
+        tar: &FileLock,
+    ) -> CargoResult<()> {
+        debug!(
+            "adding package {}@{} to local overlay at {}",
+            package.name(),
+            package.version(),
+            self.root.as_path_unlocked().display()
+        );
+        {
+            let mut tar_copy = self.root.open_rw_exclusive_create(
+                package.package_id().tarball_name(),
+                self.gctx,
+                "temporary package registry",
+            )?;
+            tar.file().seek(SeekFrom::Start(0))?;
+            std::io::copy(&mut tar.file(), &mut tar_copy)?;
+            tar_copy.flush()?;
+        }
+
+        let new_crate = super::registry::prepare_transmit(self.gctx, ws, package, self.upstream)?;
+
+        tar.file().seek(SeekFrom::Start(0))?;
+        let cksum = cargo_util::Sha256::new()
+            .update_file(tar.file())?
+            .finish_hex();
+
+        let deps: Vec<_> = new_crate
+            .deps
+            .into_iter()
+            .map(|dep| RegistryDependency {
+                name: dep.name.into(),
+                req: dep.version_req.into(),
+                features: dep.features.into_iter().map(|x| x.into()).collect(),
+                optional: dep.optional,
+                default_features: dep.default_features,
+                target: dep.target.map(|x| x.into()),
+                kind: Some(dep.kind.into()),
+                registry: dep.registry.map(|x| x.into()),
+                package: None,
+                public: None,
+                artifact: dep
+                    .artifact
+                    .map(|xs| xs.into_iter().map(|x| x.into()).collect()),
+                bindep_target: dep.bindep_target.map(|x| x.into()),
+                lib: dep.lib,
+            })
+            .collect();
+
+        let index_line = serde_json::to_string(&IndexPackage {
+            name: new_crate.name.into(),
+            vers: package.version().clone(),
+            deps,
+            features: new_crate
+                .features
+                .into_iter()
+                .map(|(k, v)| (k.into(), v.into_iter().map(|x| x.into()).collect()))
+                .collect(),
+            features2: None,
+            cksum,
+            yanked: None,
+            links: new_crate.links.map(|x| x.into()),
+            rust_version: None,
+            v: Some(2),
+        })?;
+
+        let file = cargo_util::registry::make_dep_path(package.name().as_str(), false);
+        let mut dst = self.index_path().open_rw_exclusive_create(
+            file,
+            self.gctx,
+            "temporary package registry",
+        )?;
+        dst.write_all(index_line.as_bytes())?;
+        Ok(())
+    }
 }

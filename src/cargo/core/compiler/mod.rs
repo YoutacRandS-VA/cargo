@@ -97,6 +97,7 @@ use crate::util::{add_path_args, internal};
 use cargo_util::{paths, ProcessBuilder, ProcessError};
 use cargo_util_schemas::manifest::TomlDebugInfo;
 use cargo_util_schemas::manifest::TomlTrimPaths;
+use cargo_util_schemas::manifest::TomlTrimPathsValue;
 use rustfix::diagnostics::Applicability;
 
 const RUSTDOC_CRATE_VERSION_FLAG: &str = "--crate-version";
@@ -732,10 +733,14 @@ fn prepare_rustdoc(build_runner: &BuildRunner<'_, '_>, unit: &Unit) -> CargoResu
     let doc_dir = build_runner.files().out_dir(unit);
     rustdoc.arg("-o").arg(&doc_dir);
     rustdoc.args(&features_args(unit));
-    rustdoc.args(&check_cfg_args(build_runner, unit)?);
+    rustdoc.args(&check_cfg_args(unit)?);
 
     add_error_format_and_color(build_runner, &mut rustdoc);
     add_allow_features(build_runner, &mut rustdoc);
+
+    if let Some(trim_paths) = unit.profile.trim_paths.as_ref() {
+        trim_paths_args_rustdoc(&mut rustdoc, build_runner, unit, trim_paths)?;
+    }
 
     rustdoc.args(unit.pkg.manifest().lint_rustflags());
     if let Some(args) = build_runner.bcx.extra_args_for(unit) {
@@ -1125,7 +1130,7 @@ fn build_base_args(
     }
 
     cmd.args(&features_args(unit));
-    cmd.args(&check_cfg_args(build_runner, unit)?);
+    cmd.args(&check_cfg_args(unit)?);
 
     let meta = build_runner.files().metadata(unit);
     cmd.arg("-C").arg(&format!("metadata={}", meta));
@@ -1223,6 +1228,32 @@ fn features_args(unit: &Unit) -> Vec<OsString> {
     args
 }
 
+/// Like [`trim_paths_args`] but for rustdoc invocations.
+fn trim_paths_args_rustdoc(
+    cmd: &mut ProcessBuilder,
+    build_runner: &BuildRunner<'_, '_>,
+    unit: &Unit,
+    trim_paths: &TomlTrimPaths,
+) -> CargoResult<()> {
+    match trim_paths {
+        // rustdoc supports diagnostics trimming only.
+        TomlTrimPaths::Values(values) if !values.contains(&TomlTrimPathsValue::Diagnostics) => {
+            return Ok(())
+        }
+        _ => {}
+    }
+
+    // feature gate was checked during manifest/config parsing.
+    cmd.arg("-Zunstable-options");
+
+    // Order of `--remap-path-prefix` flags is important for `-Zbuild-std`.
+    // We want to show `/rustc/<hash>/library/std` instead of `std-0.0.0`.
+    cmd.arg(package_remap(build_runner, unit));
+    cmd.arg(sysroot_remap(build_runner, unit));
+
+    Ok(())
+}
+
 /// Generates the `--remap-path-scope` and `--remap-path-prefix` for [RFC 3127].
 /// See also unstable feature [`-Ztrim-paths`].
 ///
@@ -1242,151 +1273,147 @@ fn trim_paths_args(
     cmd.arg("-Zunstable-options");
     cmd.arg(format!("-Zremap-path-scope={trim_paths}"));
 
-    let sysroot_remap = {
-        let sysroot = &build_runner.bcx.target_data.info(unit.kind).sysroot;
-        let mut remap = OsString::from("--remap-path-prefix=");
-        remap.push(sysroot);
-        remap.push("/lib/rustlib/src/rust"); // See also `detect_sysroot_src_path()`.
-        remap.push("=");
-        remap.push("/rustc/");
-        // This remap logic aligns with rustc:
-        // <https://github.com/rust-lang/rust/blob/c2ef3516/src/bootstrap/src/lib.rs#L1113-L1116>
-        if let Some(commit_hash) = build_runner.bcx.rustc().commit_hash.as_ref() {
-            remap.push(commit_hash);
-        } else {
-            remap.push(build_runner.bcx.rustc().version.to_string());
-        }
-        remap
-    };
-    let package_remap = {
-        let pkg_root = unit.pkg.root();
-        let ws_root = build_runner.bcx.ws.root();
-        let mut remap = OsString::from("--remap-path-prefix=");
-        // Remap rules for dependencies
-        //
-        // * Git dependencies: remove ~/.cargo/git/checkouts prefix.
-        // * Registry dependencies: remove ~/.cargo/registry/src prefix.
-        // * Others (e.g. path dependencies):
-        //     * relative paths to workspace root if inside the workspace directory.
-        //     * otherwise remapped to `<pkg>-<version>`.
-        let source_id = unit.pkg.package_id().source_id();
-        if source_id.is_git() {
-            remap.push(
-                build_runner
-                    .bcx
-                    .gctx
-                    .git_checkouts_path()
-                    .as_path_unlocked(),
-            );
-            remap.push("=");
-        } else if source_id.is_registry() {
-            remap.push(
-                build_runner
-                    .bcx
-                    .gctx
-                    .registry_source_path()
-                    .as_path_unlocked(),
-            );
-            remap.push("=");
-        } else if pkg_root.strip_prefix(ws_root).is_ok() {
-            remap.push(ws_root);
-            remap.push("=."); // remap to relative rustc work dir explicitly
-        } else {
-            remap.push(pkg_root);
-            remap.push("=");
-            remap.push(unit.pkg.name());
-            remap.push("-");
-            remap.push(unit.pkg.version().to_string());
-        }
-        remap
-    };
-
     // Order of `--remap-path-prefix` flags is important for `-Zbuild-std`.
     // We want to show `/rustc/<hash>/library/std` instead of `std-0.0.0`.
-    cmd.arg(package_remap);
-    cmd.arg(sysroot_remap);
+    cmd.arg(package_remap(build_runner, unit));
+    cmd.arg(sysroot_remap(build_runner, unit));
 
     Ok(())
 }
 
+/// Path prefix remap rules for sysroot.
+///
+/// This remap logic aligns with rustc:
+/// <https://github.com/rust-lang/rust/blob/c2ef3516/src/bootstrap/src/lib.rs#L1113-L1116>
+fn sysroot_remap(build_runner: &BuildRunner<'_, '_>, unit: &Unit) -> OsString {
+    let sysroot = &build_runner.bcx.target_data.info(unit.kind).sysroot;
+    let mut remap = OsString::from("--remap-path-prefix=");
+    remap.push(sysroot);
+    remap.push("/lib/rustlib/src/rust"); // See also `detect_sysroot_src_path()`.
+    remap.push("=");
+    remap.push("/rustc/");
+    if let Some(commit_hash) = build_runner.bcx.rustc().commit_hash.as_ref() {
+        remap.push(commit_hash);
+    } else {
+        remap.push(build_runner.bcx.rustc().version.to_string());
+    }
+    remap
+}
+
+/// Path prefix remap rules for dependencies.
+///
+/// * Git dependencies: remove `~/.cargo/git/checkouts` prefix.
+/// * Registry dependencies: remove `~/.cargo/registry/src` prefix.
+/// * Others (e.g. path dependencies):
+///     * relative paths to workspace root if inside the workspace directory.
+///     * otherwise remapped to `<pkg>-<version>`.
+fn package_remap(build_runner: &BuildRunner<'_, '_>, unit: &Unit) -> OsString {
+    let pkg_root = unit.pkg.root();
+    let ws_root = build_runner.bcx.ws.root();
+    let mut remap = OsString::from("--remap-path-prefix=");
+    let source_id = unit.pkg.package_id().source_id();
+    if source_id.is_git() {
+        remap.push(
+            build_runner
+                .bcx
+                .gctx
+                .git_checkouts_path()
+                .as_path_unlocked(),
+        );
+        remap.push("=");
+    } else if source_id.is_registry() {
+        remap.push(
+            build_runner
+                .bcx
+                .gctx
+                .registry_source_path()
+                .as_path_unlocked(),
+        );
+        remap.push("=");
+    } else if pkg_root.strip_prefix(ws_root).is_ok() {
+        remap.push(ws_root);
+        remap.push("=."); // remap to relative rustc work dir explicitly
+    } else {
+        remap.push(pkg_root);
+        remap.push("=");
+        remap.push(unit.pkg.name());
+        remap.push("-");
+        remap.push(unit.pkg.version().to_string());
+    }
+    remap
+}
+
 /// Generates the `--check-cfg` arguments for the `unit`.
-fn check_cfg_args(build_runner: &BuildRunner<'_, '_>, unit: &Unit) -> CargoResult<Vec<OsString>> {
-    if build_runner
-        .bcx
-        .target_data
-        .info(unit.kind)
-        .support_check_cfg
-    {
-        // The routine below generates the --check-cfg arguments. Our goals here are to
-        // enable the checking of conditionals and pass the list of declared features.
-        //
-        // In the simplified case, it would resemble something like this:
-        //
-        //   --check-cfg=cfg() --check-cfg=cfg(feature, values(...))
-        //
-        // but having `cfg()` is redundant with the second argument (as well-known names
-        // and values are implicitly enabled when one or more `--check-cfg` argument is
-        // passed) so we don't emit it and just pass:
-        //
-        //   --check-cfg=cfg(feature, values(...))
-        //
-        // This way, even if there are no declared features, the config `feature` will
-        // still be expected, meaning users would get "unexpected value" instead of name.
-        // This wasn't always the case, see rust-lang#119930 for some details.
+fn check_cfg_args(unit: &Unit) -> CargoResult<Vec<OsString>> {
+    // The routine below generates the --check-cfg arguments. Our goals here are to
+    // enable the checking of conditionals and pass the list of declared features.
+    //
+    // In the simplified case, it would resemble something like this:
+    //
+    //   --check-cfg=cfg() --check-cfg=cfg(feature, values(...))
+    //
+    // but having `cfg()` is redundant with the second argument (as well-known names
+    // and values are implicitly enabled when one or more `--check-cfg` argument is
+    // passed) so we don't emit it and just pass:
+    //
+    //   --check-cfg=cfg(feature, values(...))
+    //
+    // This way, even if there are no declared features, the config `feature` will
+    // still be expected, meaning users would get "unexpected value" instead of name.
+    // This wasn't always the case, see rust-lang#119930 for some details.
 
-        let gross_cap_estimation = unit.pkg.summary().features().len() * 7 + 25;
-        let mut arg_feature = OsString::with_capacity(gross_cap_estimation);
+    let gross_cap_estimation = unit.pkg.summary().features().len() * 7 + 25;
+    let mut arg_feature = OsString::with_capacity(gross_cap_estimation);
 
-        arg_feature.push("cfg(feature, values(");
-        for (i, feature) in unit.pkg.summary().features().keys().enumerate() {
-            if i != 0 {
-                arg_feature.push(", ");
-            }
-            arg_feature.push("\"");
-            arg_feature.push(feature);
-            arg_feature.push("\"");
+    arg_feature.push("cfg(feature, values(");
+    for (i, feature) in unit.pkg.summary().features().keys().enumerate() {
+        if i != 0 {
+            arg_feature.push(", ");
         }
-        arg_feature.push("))");
+        arg_feature.push("\"");
+        arg_feature.push(feature);
+        arg_feature.push("\"");
+    }
+    arg_feature.push("))");
 
-        // We also include the `docsrs` cfg from the docs.rs service. We include it here
-        // (in Cargo) instead of rustc, since there is a much closer relationship between
-        // Cargo and docs.rs than rustc and docs.rs. In particular, all users of docs.rs use
-        // Cargo, but not all users of rustc (like Rust-for-Linux) use docs.rs.
+    // We also include the `docsrs` cfg from the docs.rs service. We include it here
+    // (in Cargo) instead of rustc, since there is a much closer relationship between
+    // Cargo and docs.rs than rustc and docs.rs. In particular, all users of docs.rs use
+    // Cargo, but not all users of rustc (like Rust-for-Linux) use docs.rs.
 
-        let mut args = vec![
-            OsString::from("--check-cfg"),
-            OsString::from("cfg(docsrs)"),
-            OsString::from("--check-cfg"),
-            arg_feature,
-        ];
+    let mut args = vec![
+        OsString::from("--check-cfg"),
+        OsString::from("cfg(docsrs)"),
+        OsString::from("--check-cfg"),
+        arg_feature,
+    ];
 
-        // Also include the custom arguments specified in `[lints.rust.unexpected_cfgs.check_cfg]`
-        if let Ok(Some(lints)) = unit.pkg.manifest().resolved_toml().resolved_lints() {
-            if let Some(rust_lints) = lints.get("rust") {
-                if let Some(unexpected_cfgs) = rust_lints.get("unexpected_cfgs") {
-                    if let Some(config) = unexpected_cfgs.config() {
-                        if let Some(check_cfg) = config.get("check-cfg") {
-                            if let Ok(check_cfgs) =
-                                toml::Value::try_into::<Vec<String>>(check_cfg.clone())
-                            {
-                                for check_cfg in check_cfgs {
-                                    args.push(OsString::from("--check-cfg"));
-                                    args.push(OsString::from(check_cfg));
-                                }
-                            // error about `check-cfg` not being a list-of-string
-                            } else {
-                                bail!("`lints.rust.unexpected_cfgs.check-cfg` must be a list of string");
+    // Also include the custom arguments specified in `[lints.rust.unexpected_cfgs.check_cfg]`
+    if let Ok(Some(lints)) = unit.pkg.manifest().normalized_toml().normalized_lints() {
+        if let Some(rust_lints) = lints.get("rust") {
+            if let Some(unexpected_cfgs) = rust_lints.get("unexpected_cfgs") {
+                if let Some(config) = unexpected_cfgs.config() {
+                    if let Some(check_cfg) = config.get("check-cfg") {
+                        if let Ok(check_cfgs) =
+                            toml::Value::try_into::<Vec<String>>(check_cfg.clone())
+                        {
+                            for check_cfg in check_cfgs {
+                                args.push(OsString::from("--check-cfg"));
+                                args.push(OsString::from(check_cfg));
                             }
+                        // error about `check-cfg` not being a list-of-string
+                        } else {
+                            bail!(
+                                "`lints.rust.unexpected_cfgs.check-cfg` must be a list of string"
+                            );
                         }
                     }
                 }
             }
         }
-
-        Ok(args)
-    } else {
-        Ok(Vec::new())
     }
+
+    Ok(args)
 }
 
 /// Adds LTO related codegen flags.

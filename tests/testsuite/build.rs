@@ -1,5 +1,10 @@
 //! Tests for the `cargo build` command.
 
+use std::env;
+use std::fs;
+use std::io::Read;
+use std::process::Stdio;
+
 use cargo::{
     core::compiler::CompileMode,
     core::{Shell, Workspace},
@@ -7,7 +12,7 @@ use cargo::{
     GlobalContext,
 };
 use cargo_test_support::compare::assert_e2e;
-use cargo_test_support::paths::{root, CargoPathExt};
+use cargo_test_support::paths::root;
 use cargo_test_support::prelude::*;
 use cargo_test_support::registry::Package;
 use cargo_test_support::str;
@@ -17,10 +22,6 @@ use cargo_test_support::{
     tools, Execs, ProjectBuilder,
 };
 use cargo_util::paths::dylib_path_envvar;
-use std::env;
-use std::fs;
-use std::io::Read;
-use std::process::Stdio;
 
 #[cargo_test]
 fn cargo_compile_simple() {
@@ -397,7 +398,7 @@ fn cargo_compile_with_invalid_manifest() {
 [ERROR] failed to parse manifest at `[ROOT]/foo/Cargo.toml`
 
 Caused by:
-  virtual manifests must be configured with [workspace]
+  manifest is missing either a `[package]` or a `[workspace]`
 
 "#]])
         .run();
@@ -6418,7 +6419,6 @@ fn pipelining_big_graph() {
         .with_stderr_data(
             str![[r#"
 [LOCKING] 61 packages to latest compatible versions
-[COMPILING] b30 v0.5.0 ([ROOT]/foo/b30)
 [COMPILING] a30 v0.5.0 ([ROOT]/foo/a30)
 [ERROR] don't actually build me
 ...
@@ -6575,7 +6575,7 @@ fn user_specific_cfgs_are_filtered_out() {
         )
         .build();
 
-    p.cargo("rustc -- --cfg debug_assertions --cfg proc_macro -Aunknown_lints -Aunexpected_builtin_cfgs")
+    p.cargo("rustc -- --cfg debug_assertions --cfg proc_macro -Aunknown_lints -Aexplicit_builtin_cfgs_in_flags")
         .run();
     p.process(&p.bin("foo")).run();
 }

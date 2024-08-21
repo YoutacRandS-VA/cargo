@@ -237,7 +237,7 @@ impl<'gctx> PackageRegistry<'gctx> {
             }
 
             // If the previous source has the same precise version as we do,
-            // then we're done, otherwise we need to need to move forward
+            // then we're done, otherwise we need to move forward
             // updating this source.
             Some((previous, _)) => {
                 if previous.has_same_precise_as(namespace) {
@@ -336,6 +336,7 @@ impl<'gctx> PackageRegistry<'gctx> {
     /// The return value is a `Vec` of patches that should *not* be locked.
     /// This happens when the patch is locked, but the patch has been updated
     /// so the locked value is no longer correct.
+    #[tracing::instrument(skip(self, patch_deps))]
     pub fn patch(
         &mut self,
         url: &Url,
@@ -443,8 +444,8 @@ impl<'gctx> PackageRegistry<'gctx> {
                         patches must point to different sources",
                         dep.package_name(),
                         url
-                    ))
-                    .context(format!("failed to resolve patches for `{}`", url));
+                    )
+                    .context(format!("failed to resolve patches for `{}`", url)));
                 }
                 unlocked_summaries.push(summary);
             }
@@ -784,6 +785,7 @@ impl<'gctx> Registry for PackageRegistry<'gctx> {
         }
     }
 
+    #[tracing::instrument(skip_all)]
     fn block_until_ready(&mut self) -> CargoResult<()> {
         if cfg!(debug_assertions) {
             // Force borrow to catch invalid borrows, regardless of which source is used and how it

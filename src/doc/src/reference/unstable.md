@@ -52,12 +52,13 @@ how the feature works:
   ```
 
 Each new feature described below should explain how to use it.
-For the latest nightly, see the [nightly version] of this page.
+
+*For the latest nightly, see the [nightly version] of this page.*
 
 [config file]: config.md
 [nightly channel]: ../../book/appendix-07-nightly-rust.html
 [stabilized]: https://doc.crates.io/contrib/process/unstable.html#stabilization
-[nightly version]: https://doc.rust-lang.org/nightly/cargo/reference/unstable.html#script
+[nightly version]: https://doc.rust-lang.org/nightly/cargo/reference/unstable.html
 
 ## List of unstable features
 
@@ -100,6 +101,7 @@ For the latest nightly, see the [nightly version] of this page.
     * [Edition 2024](#edition-2024) — Adds support for the 2024 Edition.
     * [Profile `trim-paths` option](#profile-trim-paths-option) --- Control the sanitization of file paths in build outputs.
     * [`[lints.cargo]`](#lintscargo) --- Allows configuring lints for Cargo.
+    * [path bases](#path-bases) --- Named base directories for path dependencies.
 * Information and metadata
     * [Build-plan](#build-plan) --- Emits JSON information on which commands will be run.
     * [unit-graph](#unit-graph) --- Emits JSON for Cargo's internal graph structure.
@@ -113,6 +115,7 @@ For the latest nightly, see the [nightly version] of this page.
 * Other
     * [gitoxide](#gitoxide) --- Use `gitoxide` instead of `git2` for a set of operations.
     * [script](#script) --- Enable support for single-file `.rs` packages.
+    * [lockfile-path](#lockfile-path) --- Allows to specify a path to lockfile other than the default path `<workspace_root>/Cargo.lock`.
 
 ## allow-features
 
@@ -338,26 +341,27 @@ This was stabilized in 1.79 in [#13608](https://github.com/rust-lang/cargo/pull/
 ### MSRV-aware resolver
 
 `-Zmsrv-policy` allows access to an MSRV-aware resolver which can be enabled with:
-- `resolver.something-like-precedence` config field
+- `resolver.incompatible-rust-versions` config field
 - `workspace.resolver = "3"` / `package.resolver = "3"`
 - `package.edition = "2024"` (only in workspace root)
 
 The resolver will prefer dependencies with a `package.rust-version` that is the same or older than your project's MSRV.
 Your project's MSRV is determined by taking the lowest `package.rust-version` set among your workspace members.
-If there is none set, your toolchain version will be used with the intent to pick up the version from rustup's `rust-toolchain.toml`, if present.
+If there is no MSRV set then your toolchain version will be used, allowing it to pick up the toolchain version from pinned in rustup (e.g. `rust-toolchain.toml`).
 
-#### `resolver.something-like-precedence`
+#### `resolver.incompatible-rust-versions`
 * Type: string
-* Default: "something-like-maximum"
-* Environment: `CARGO_RESOLVER_SOMETHING_LIKE_PRECEDENCE`
+* Default: `"allow"`
+* Environment: `CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS`
 
-Select which policy should be used when resolving dependencies.  Values include
-- `something-like-maximum`: prefer highest compatible versions of a package
-- `something-like-rust-version`: prefer versions of packages compatible with your project's Rust version
+When resolving a version for a dependency, select how versions with incompatible `package.rust-version`s are treated.
+Values include:
+- `allow`: treat `rust-version`-incompatible versions like any other version
+- `fallback`: only consider `rust-version`-incompatible versions if no other version matched
 
 Can be overridden with
 - `--ignore-rust-version` CLI option
-- Setting the dependency's version requirement too high
+- Setting the dependency's version requirement higher than any version with a compatible `rust-version`
 - Specifying the version to `cargo update` with `--precise`
 
 ## precise-pre-release
@@ -1566,6 +1570,77 @@ implicit-features = "warn"
 
 [lints]
 workspace = true
+```
+
+## Path Bases
+
+* Tracking Issue: [#14355](https://github.com/rust-lang/cargo/issues/14355)
+
+A `path` dependency may optionally specify a base by setting the `base` key to
+the name of a path base from the `[path-bases]` table in either the
+[configuration](config.md) or one of the [built-in path bases](#built-in-path-bases).
+The value of that path base is prepended to the `path` value (along with a path
+separator if necessary) to produce the actual location where Cargo will look for
+the dependency.
+
+For example, if the `Cargo.toml` contains:
+
+```toml
+cargo-features = ["path-bases"]
+
+[dependencies]
+foo = { base = "dev", path = "foo" }
+```
+
+Given a `[path-bases]` table in the configuration that contains:
+
+```toml
+[path-bases]
+dev = "/home/user/dev/rust/libraries/"
+```
+
+This will produce a `path` dependency `foo` located at
+`/home/user/dev/rust/libraries/foo`.
+
+Path bases can be either absolute or relative. Relative path bases are relative
+to the parent directory of the configuration file that declared that path base.
+
+The name of a path base must use only [alphanumeric](https://doc.rust-lang.org/std/primitive.char.html#method.is_alphanumeric)
+characters or `-` or `_`, must start with an [alphabetic](https://doc.rust-lang.org/std/primitive.char.html#method.is_alphabetic)
+character, and must not be empty.
+
+If the name of path base used in a dependency is neither in the configuration
+nor one of the built-in path base, then Cargo will raise an error.
+
+#### Built-in path bases
+
+Cargo provides implicit path bases that can be used without the need to specify
+them in a `[path-bases]` table.
+
+* `workspace` - If a project is [a workspace or workspace member](workspaces.md)
+then this path base is defined as the parent directory of the root `Cargo.toml`
+of the workspace.
+
+If a built-in path base name is also declared in the configuration, then Cargo
+will prefer the value in the configuration. The allows Cargo to add new built-in
+path bases without compatibility issues (as existing uses will shadow the
+built-in name).
+
+## lockfile-path
+* Original Issue: [#5707](https://github.com/rust-lang/cargo/issues/5707)
+* Tracking Issue: [#14421](https://github.com/rust-lang/cargo/issues/14421)
+
+This feature allows you to specify the path of lockfile Cargo.lock. 
+By default, lockfile is written into `<workspace_root>/Cargo.lock`. 
+However, when sources are stored in read-only directory, most of the cargo commands 
+would fail, trying to write a lockfile. The `--lockfile-path`
+flag makes it easier to work with readonly sources. 
+Note, that currently path must end with `Cargo.lock`. Meaning, if you want to use 
+this feature in multiple projects, lockfiles should be stored in different directories.
+Example:
+
+```sh
+cargo +nightly metadata --lockfile-path=$LOCKFILES_ROOT/my-project/Cargo.lock -Z unstable-options
 ```
 
 # Stabilized and removed features

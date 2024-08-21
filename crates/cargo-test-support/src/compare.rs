@@ -1,6 +1,11 @@
 //! Routines for comparing and diffing output.
 //!
-//! # Patterns
+//! # Deprecated comparisons
+//!
+//! Cargo's tests are in transition from internal-only pattern and normalization routines used in
+//! asserts like [`crate::Execs::with_stdout`] to [`assert_e2e`] and [`assert_ui`].
+//!
+//! ## Patterns
 //!
 //! Many of these functions support special markup to assist with comparing
 //! text that may vary or is otherwise uninteresting for the test at hand. The
@@ -22,7 +27,7 @@
 //!   can use this to avoid duplicating the `with_stderr` call like:
 //!   `if cfg!(target_env = "msvc") {e.with_stderr("...[DIRTY]...");} else {e.with_stderr("...");}`.
 //!
-//! # Normalization
+//! ## Normalization
 //!
 //! In addition to the patterns described above, the strings are normalized
 //! in such a way to avoid unwanted differences. The normalizations are:
@@ -86,9 +91,26 @@ macro_rules! regex {
 ///   Other heuristics are applied to try to ensure Windows-style paths aren't
 ///   a problem.
 /// - Carriage returns are removed, which can help when running on Windows.
+///
+/// # Example
+///
+/// ```no_run
+/// # use cargo_test_support::compare::assert_e2e;
+/// # use cargo_test_support::file;
+/// # let p = cargo_test_support::project().build();
+/// # let stdout = "";
+/// assert_e2e().eq(stdout, file!["stderr.term.svg"]);
+/// ```
+/// ```console
+/// $ SNAPSHOTS=overwrite cargo test
+/// ```
 pub fn assert_ui() -> snapbox::Assert {
     let mut subs = snapbox::Redactions::new();
-    add_common_redactions(&mut subs);
+    subs.extend(MIN_LITERAL_REDACTIONS.into_iter().cloned())
+        .unwrap();
+    add_test_support_redactions(&mut subs);
+    add_regex_redactions(&mut subs);
+
     snapbox::Assert::new()
         .action_env(snapbox::assert::DEFAULT_ACTION_ENV)
         .redact_with(subs)
@@ -125,43 +147,63 @@ pub fn assert_ui() -> snapbox::Assert {
 ///   Other heuristics are applied to try to ensure Windows-style paths aren't
 ///   a problem.
 /// - Carriage returns are removed, which can help when running on Windows.
+///
+/// # Example
+///
+/// ```no_run
+/// # use cargo_test_support::compare::assert_e2e;
+/// # use cargo_test_support::str;
+/// # let p = cargo_test_support::project().build();
+/// assert_e2e().eq(p.read_lockfile(), str![]);
+/// ```
+/// ```console
+/// $ SNAPSHOTS=overwrite cargo test
+/// ```
 pub fn assert_e2e() -> snapbox::Assert {
     let mut subs = snapbox::Redactions::new();
-    add_common_redactions(&mut subs);
+    subs.extend(MIN_LITERAL_REDACTIONS.into_iter().cloned())
+        .unwrap();
     subs.extend(E2E_LITERAL_REDACTIONS.into_iter().cloned())
         .unwrap();
+    add_test_support_redactions(&mut subs);
+    add_regex_redactions(&mut subs);
 
     snapbox::Assert::new()
         .action_env(snapbox::assert::DEFAULT_ACTION_ENV)
         .redact_with(subs)
 }
 
-fn add_common_redactions(subs: &mut snapbox::Redactions) {
+fn add_test_support_redactions(subs: &mut snapbox::Redactions) {
     let root = paths::root();
     // Use `from_file_path` instead of `from_dir_path` so the trailing slash is
     // put in the users output, rather than hidden in the variable
     let root_url = url::Url::from_file_path(&root).unwrap().to_string();
 
-    subs.extend(MIN_LITERAL_REDACTIONS.into_iter().cloned())
-        .unwrap();
     subs.insert("[ROOT]", root).unwrap();
     subs.insert("[ROOTURL]", root_url).unwrap();
+    subs.insert("[HOST_TARGET]", rustc_host()).unwrap();
+    if let Some(alt_target) = try_alternate() {
+        subs.insert("[ALT_TARGET]", alt_target).unwrap();
+    }
+}
+
+fn add_regex_redactions(subs: &mut snapbox::Redactions) {
     // For e2e tests
     subs.insert(
         "[ELAPSED]",
-        regex!(r"\[FINISHED\].*in (?<redacted>[0-9]+(\.[0-9]+))s"),
+        regex!(r"\[FINISHED\].*in (?<redacted>[0-9]+(\.[0-9]+)?(m [0-9]+)?)s"),
     )
     .unwrap();
     // for UI tests
     subs.insert(
         "[ELAPSED]",
-        regex!(r"Finished.*in (?<redacted>[0-9]+(\.[0-9]+))s"),
+        regex!(r"Finished.*in (?<redacted>[0-9]+(\.[0-9]+)?(m [0-9]+)?)s"),
     )
     .unwrap();
     // output from libtest
     subs.insert(
         "[ELAPSED]",
-        regex!(r"; finished in (?<redacted>[0-9]+(\.[0-9]+))s"),
+        regex!(r"; finished in (?<redacted>[0-9]+(\.[0-9]+)?(m [0-9]+)?)s"),
     )
     .unwrap();
     subs.insert(
@@ -176,7 +218,7 @@ fn add_common_redactions(subs: &mut snapbox::Redactions) {
     .unwrap();
     subs.insert(
         "[HASH]",
-        regex!(r"home/\.cargo/registry/src/-(?<redacted>[a-z0-9]+)"),
+        regex!(r"home/\.cargo/registry/(cache|index|src)/-(?<redacted>[a-z0-9]+)"),
     )
     .unwrap();
     subs.insert(
@@ -186,10 +228,6 @@ fn add_common_redactions(subs: &mut snapbox::Redactions) {
     .unwrap();
     subs.insert("[HASH]", regex!(r"/[a-z0-9\-_]+-(?<redacted>[0-9a-f]{16})"))
         .unwrap();
-    subs.insert("[HOST_TARGET]", rustc_host()).unwrap();
-    if let Some(alt_target) = try_alternate() {
-        subs.insert("[ALT_TARGET]", alt_target).unwrap();
-    }
     subs.insert(
         "[AVG_ELAPSED]",
         regex!(r"(?<redacted>[0-9]+(\.[0-9]+)?) ns/iter"),
@@ -822,129 +860,153 @@ impl fmt::Debug for WildStr<'_> {
     }
 }
 
-#[test]
-fn wild_str_cmp() {
-    for (a, b) in &[
-        ("a b", "a b"),
-        ("a[..]b", "a b"),
-        ("a[..]", "a b"),
-        ("[..]", "a b"),
-        ("[..]b", "a b"),
-    ] {
-        assert_eq!(WildStr::new(a), WildStr::new(b));
+#[cfg(test)]
+mod test {
+    use snapbox::assert_data_eq;
+    use snapbox::prelude::*;
+    use snapbox::str;
+
+    use super::*;
+
+    #[test]
+    fn wild_str_cmp() {
+        for (a, b) in &[
+            ("a b", "a b"),
+            ("a[..]b", "a b"),
+            ("a[..]", "a b"),
+            ("[..]", "a b"),
+            ("[..]b", "a b"),
+        ] {
+            assert_eq!(WildStr::new(a), WildStr::new(b));
+        }
+        for (a, b) in &[("[..]b", "c"), ("b", "c"), ("b", "cb")] {
+            assert_ne!(WildStr::new(a), WildStr::new(b));
+        }
     }
-    for (a, b) in &[("[..]b", "c"), ("b", "c"), ("b", "cb")] {
-        assert_ne!(WildStr::new(a), WildStr::new(b));
-    }
-}
 
-#[test]
-fn dirty_msvc() {
-    let case = |expected: &str, wild: &str, msvc: bool| {
-        assert_eq!(expected, &replace_dirty_msvc_impl(wild, msvc));
-    };
+    #[test]
+    fn dirty_msvc() {
+        let case = |expected: &str, wild: &str, msvc: bool| {
+            assert_eq!(expected, &replace_dirty_msvc_impl(wild, msvc));
+        };
 
-    // no replacements
-    case("aa", "aa", false);
-    case("aa", "aa", true);
+        // no replacements
+        case("aa", "aa", false);
+        case("aa", "aa", true);
 
-    // with replacements
-    case(
-        "\
+        // with replacements
+        case(
+            "\
 [DIRTY] a",
-        "\
+            "\
 [DIRTY-MSVC] a",
-        true,
-    );
-    case(
-        "",
-        "\
+            true,
+        );
+        case(
+            "",
+            "\
 [DIRTY-MSVC] a",
-        false,
-    );
-    case(
-        "\
+            false,
+        );
+        case(
+            "\
 [DIRTY] a
 [COMPILING] a",
-        "\
+            "\
 [DIRTY-MSVC] a
 [COMPILING] a",
-        true,
-    );
-    case(
-        "\
+            true,
+        );
+        case(
+            "\
 [COMPILING] a",
-        "\
+            "\
 [DIRTY-MSVC] a
 [COMPILING] a",
-        false,
-    );
+            false,
+        );
 
-    // test trailing newline behavior
-    case(
-        "\
+        // test trailing newline behavior
+        case(
+            "\
 A
 B
 ", "\
 A
 B
 ", true,
-    );
+        );
 
-    case(
-        "\
+        case(
+            "\
 A
 B
 ", "\
 A
 B
 ", false,
-    );
+        );
 
-    case(
-        "\
+        case(
+            "\
 A
 B", "\
 A
 B", true,
-    );
+        );
 
-    case(
-        "\
+        case(
+            "\
 A
 B", "\
 A
 B", false,
-    );
+        );
 
-    case(
-        "\
+        case(
+            "\
 [DIRTY] a
 ",
-        "\
+            "\
 [DIRTY-MSVC] a
 ",
-        true,
-    );
-    case(
-        "\n",
-        "\
+            true,
+        );
+        case(
+            "\n",
+            "\
 [DIRTY-MSVC] a
 ",
-        false,
-    );
+            false,
+        );
 
-    case(
-        "\
+        case(
+            "\
 [DIRTY] a",
-        "\
+            "\
 [DIRTY-MSVC] a",
-        true,
-    );
-    case(
-        "",
-        "\
+            true,
+        );
+        case(
+            "",
+            "\
 [DIRTY-MSVC] a",
-        false,
-    );
+            false,
+        );
+    }
+
+    #[test]
+    fn redact_elapsed_time() {
+        let mut subs = snapbox::Redactions::new();
+        add_regex_redactions(&mut subs);
+
+        assert_data_eq!(
+            subs.redact("[FINISHED] `release` profile [optimized] target(s) in 5.5s"),
+            str!["[FINISHED] `release` profile [optimized] target(s) in [ELAPSED]s"].raw()
+        );
+        assert_data_eq!(
+            subs.redact("[FINISHED] `release` profile [optimized] target(s) in 1m 05s"),
+            str!["[FINISHED] `release` profile [optimized] target(s) in [ELAPSED]s"].raw()
+        );
+    }
 }

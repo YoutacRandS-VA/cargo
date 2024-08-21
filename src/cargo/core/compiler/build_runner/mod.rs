@@ -100,8 +100,8 @@ impl<'a, 'gctx> BuildRunner<'a, 'gctx> {
         let jobserver = match bcx.gctx.jobserver_from_env() {
             Some(c) => c.clone(),
             None => {
-                let client = Client::new(bcx.jobs() as usize)
-                    .with_context(|| "failed to create jobserver")?;
+                let client =
+                    Client::new(bcx.jobs() as usize).context("failed to create jobserver")?;
                 client.acquire_raw()?;
                 client
             }
@@ -246,7 +246,7 @@ impl<'a, 'gctx> BuildRunner<'a, 'gctx> {
                 let mut args = compiler::extern_args(&self, unit, &mut unstable_opts)?;
                 args.extend(compiler::lto_args(&self, unit));
                 args.extend(compiler::features_args(unit));
-                args.extend(compiler::check_cfg_args(&self, unit)?);
+                args.extend(compiler::check_cfg_args(unit)?);
 
                 let script_meta = self.find_build_script_metadata(unit);
                 if let Some(meta) = script_meta {
@@ -354,11 +354,11 @@ impl<'a, 'gctx> BuildRunner<'a, 'gctx> {
             .unwrap()
             .host
             .prepare()
-            .with_context(|| "couldn't prepare build directories")?;
+            .context("couldn't prepare build directories")?;
         for target in self.files.as_mut().unwrap().target.values_mut() {
             target
                 .prepare()
-                .with_context(|| "couldn't prepare build directories")?;
+                .context("couldn't prepare build directories")?;
         }
 
         let files = self.files.as_ref().unwrap();

@@ -10,10 +10,11 @@ use std::sync::Arc;
 use std::thread;
 
 use cargo_test_support::git::cargo_uses_gitoxide;
-use cargo_test_support::paths::{self, CargoPathExt};
+use cargo_test_support::paths;
 use cargo_test_support::prelude::IntoData;
+use cargo_test_support::prelude::*;
 use cargo_test_support::registry::Package;
-use cargo_test_support::{basic_lib_manifest, basic_manifest, git, main_file, path2url, project};
+use cargo_test_support::{basic_lib_manifest, basic_manifest, git, main_file, project};
 use cargo_test_support::{sleep_ms, str, t, Project};
 
 #[cargo_test]
@@ -877,7 +878,7 @@ fn dep_with_submodule() {
     let git_project2 = git::new("dep2", |project| project.file("lib.rs", "pub fn dep() {}"));
 
     let repo = git2::Repository::open(&git_project.root()).unwrap();
-    let url = path2url(git_project2.root()).to_string();
+    let url = git_project2.root().to_url().to_string();
     git::add_submodule(&repo, &url, Path::new("src"));
     git::commit(&repo);
 
@@ -999,7 +1000,7 @@ fn dep_with_bad_submodule() {
     let git_project2 = git::new("dep2", |project| project.file("lib.rs", "pub fn dep() {}"));
 
     let repo = git2::Repository::open(&git_project.root()).unwrap();
-    let url = path2url(git_project2.root()).to_string();
+    let url = git_project2.root().to_url().to_string();
     git::add_submodule(&repo, &url, Path::new("src"));
     git::commit(&repo);
 
@@ -1131,31 +1132,31 @@ fn ambiguous_published_deps() {
     let git_project = git::new("dep", |project| {
         project
             .file(
-                "aaa/Cargo.toml",
+                "duplicate1/Cargo.toml",
                 &format!(
                     r#"
                     [package]
-                    name = "bar"
+                    name = "duplicate"
                     version = "0.5.0"
                     edition = "2015"
                     publish = true
                 "#
                 ),
             )
-            .file("aaa/src/lib.rs", "")
+            .file("duplicate1/src/lib.rs", "")
             .file(
-                "bbb/Cargo.toml",
+                "duplicate2/Cargo.toml",
                 &format!(
                     r#"
                     [package]
-                    name = "bar"
+                    name = "duplicate"
                     version = "0.5.0"
                     edition = "2015"
                     publish = true
                 "#
                 ),
             )
-            .file("bbb/src/lib.rs", "")
+            .file("duplicate2/src/lib.rs", "")
     });
 
     let p = project
@@ -1170,7 +1171,7 @@ fn ambiguous_published_deps() {
                     edition = "2015"
                     authors = ["wycats@example.com"]
 
-                    [dependencies.bar]
+                    [dependencies.duplicate]
                     git = '{}'
                 "#,
                 git_project.url()
@@ -1182,7 +1183,107 @@ fn ambiguous_published_deps() {
     p.cargo("build").run();
     p.cargo("run")
         .with_stderr_data(str![[r#"
-[WARNING] skipping duplicate package `bar` found at `[ROOT]/home/.cargo/git/checkouts/dep-[HASH]/[..]`
+[WARNING] skipping duplicate package `duplicate v0.5.0 ([ROOTURL]/dep#[..])`:
+  [ROOT]/home/.cargo/git/checkouts/dep-[HASH]/[..]/duplicate2/Cargo.toml
+in favor of [ROOT]/home/.cargo/git/checkouts/dep-[HASH]/[..]/duplicate1/Cargo.toml
+
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+[RUNNING] `target/debug/foo[EXE]`
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn unused_ambiguous_published_deps() {
+    let project = project();
+    let git_project = git::new("dep", |project| {
+        project
+            .file(
+                "unique/Cargo.toml",
+                &format!(
+                    r#"
+                    [package]
+                    name = "unique"
+                    version = "0.5.0"
+                    edition = "2015"
+                    publish = true
+                "#
+                ),
+            )
+            .file("unique/src/lib.rs", "")
+            .file(
+                "duplicate1/Cargo.toml",
+                &format!(
+                    r#"
+                    [package]
+                    name = "duplicate"
+                    version = "0.5.0"
+                    edition = "2015"
+                    publish = true
+                "#
+                ),
+            )
+            .file("duplicate1/src/lib.rs", "")
+            .file(
+                "duplicate2/Cargo.toml",
+                &format!(
+                    r#"
+                    [package]
+                    name = "duplicate"
+                    version = "0.5.0"
+                    edition = "2015"
+                    publish = true
+                "#
+                ),
+            )
+            .file("duplicate2/src/lib.rs", "")
+            .file(
+                "invalid/Cargo.toml",
+                &format!(
+                    r#"
+                    [package
+                    name = "bar"
+                    version = "0.5.0"
+                    edition = "2015"
+                    publish = true
+                "#
+                ),
+            )
+            .file("invalid/src/lib.rs", "")
+    });
+
+    let p = project
+        .file(
+            "Cargo.toml",
+            &format!(
+                r#"
+                    [package]
+
+                    name = "foo"
+                    version = "0.5.0"
+                    edition = "2015"
+                    authors = ["wycats@example.com"]
+
+                    [dependencies.unique]
+                    git = '{}'
+                "#,
+                git_project.url()
+            ),
+        )
+        .file("src/main.rs", "fn main() {  }")
+        .build();
+
+    p.cargo("build").run();
+    p.cargo("run")
+        .with_stderr_data(str![[r#"
+[ERROR] invalid table header
+expected `.`, `]`
+ --> ../home/.cargo/git/checkouts/dep-[HASH]/[..]/invalid/Cargo.toml:2:29
+  |
+2 |                     [package
+  |                             ^
+  |
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 [RUNNING] `target/debug/foo[EXE]`
 
@@ -2340,12 +2441,12 @@ fn dont_require_submodules_are_checked_out() {
     let git2 = git::new("dep2", |p| p);
 
     let repo = git2::Repository::open(&git1.root()).unwrap();
-    let url = path2url(git2.root()).to_string();
+    let url = git2.root().to_url().to_string();
     git::add_submodule(&repo, &url, Path::new("a/submodule"));
     git::commit(&repo);
 
     git2::Repository::init(&p.root()).unwrap();
-    let url = path2url(git1.root()).to_string();
+    let url = git1.root().to_url().to_string();
     let dst = paths::home().join("foo");
     git2::Repository::clone(&url, &dst).unwrap();
 
@@ -2762,7 +2863,7 @@ fn failed_submodule_checkout() {
     drop((repo, url));
 
     let repo = git2::Repository::open(&git_project.root()).unwrap();
-    let url = path2url(git_project2.root()).to_string();
+    let url = git_project2.root().to_url().to_string();
     git::add_submodule(&repo, &url, Path::new("src"));
     git::commit(&repo);
     drop(repo);
@@ -3051,7 +3152,7 @@ fn dirty_submodule() {
         project.no_manifest().file("lib.rs", "pub fn f() {}")
     });
 
-    let url = path2url(git_project2.root()).to_string();
+    let url = git_project2.root().to_url().to_string();
     git::add_submodule(&repo, &url, Path::new("src"));
 
     // Submodule added, but not committed.
@@ -3099,7 +3200,7 @@ to proceed despite this and include the uncommitted changes, pass the `--allow-d
 
     // Try with a nested submodule.
     let git_project3 = git::new("bar", |project| project.no_manifest().file("mod.rs", ""));
-    let url = path2url(git_project3.root()).to_string();
+    let url = git_project3.root().to_url().to_string();
     git::add_submodule(&sub_repo, &url, Path::new("bar"));
     git_project
         .cargo("package --no-verify")
@@ -3555,7 +3656,7 @@ fn metadata_master_consistency() {
 
     let bar_source = "git+[ROOTURL]/bar?branch=master";
     p.cargo("metadata")
-        .with_stdout_data(&metadata(&bar_source).json())
+        .with_stdout_data(&metadata(&bar_source).is_json())
         .run();
 
     // Conversely, remove branch="master" from Cargo.toml, but use a new Cargo.lock that has ?branch=master.
@@ -3601,7 +3702,7 @@ fn metadata_master_consistency() {
     // No ?branch=master!
     let bar_source = "git+[ROOTURL]/bar";
     p.cargo("metadata")
-        .with_stdout_data(&metadata(&bar_source).json())
+        .with_stdout_data(&metadata(&bar_source).is_json())
         .run();
 }
 
@@ -3984,7 +4085,7 @@ fn git_worktree_with_bare_original_repo() {
             .bare(true)
             .clone_local(git2::build::CloneLocal::Local)
             .clone(
-                path2url(git_project.root()).as_str(),
+                git_project.root().to_url().as_str(),
                 &paths::root().join("foo-bare"),
             )
             .unwrap()

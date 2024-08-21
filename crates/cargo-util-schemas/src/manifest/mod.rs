@@ -106,12 +106,12 @@ impl TomlManifest {
         self.features.as_ref()
     }
 
-    pub fn resolved_lints(&self) -> Result<Option<&TomlLints>, UnresolvedError> {
-        self.lints.as_ref().map(|l| l.resolved()).transpose()
+    pub fn normalized_lints(&self) -> Result<Option<&TomlLints>, UnresolvedError> {
+        self.lints.as_ref().map(|l| l.normalized()).transpose()
     }
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Default, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub struct TomlWorkspace {
     pub members: Option<Vec<String>>,
@@ -199,23 +199,64 @@ pub struct TomlPackage {
 }
 
 impl TomlPackage {
-    pub fn resolved_edition(&self) -> Result<Option<&String>, UnresolvedError> {
-        self.edition.as_ref().map(|v| v.resolved()).transpose()
+    pub fn new(name: PackageName) -> Self {
+        Self {
+            name,
+
+            edition: None,
+            rust_version: None,
+            version: None,
+            authors: None,
+            build: None,
+            metabuild: None,
+            default_target: None,
+            forced_target: None,
+            links: None,
+            exclude: None,
+            include: None,
+            publish: None,
+            workspace: None,
+            im_a_teapot: None,
+            autobins: None,
+            autoexamples: None,
+            autotests: None,
+            autobenches: None,
+            default_run: None,
+            description: None,
+            homepage: None,
+            documentation: None,
+            readme: None,
+            keywords: None,
+            categories: None,
+            license: None,
+            license_file: None,
+            repository: None,
+            resolver: None,
+            metadata: None,
+            _invalid_cargo_features: None,
+        }
     }
 
-    pub fn resolved_rust_version(&self) -> Result<Option<&RustVersion>, UnresolvedError> {
-        self.rust_version.as_ref().map(|v| v.resolved()).transpose()
+    pub fn normalized_edition(&self) -> Result<Option<&String>, UnresolvedError> {
+        self.edition.as_ref().map(|v| v.normalized()).transpose()
     }
 
-    pub fn resolved_version(&self) -> Result<Option<&semver::Version>, UnresolvedError> {
-        self.version.as_ref().map(|v| v.resolved()).transpose()
+    pub fn normalized_rust_version(&self) -> Result<Option<&RustVersion>, UnresolvedError> {
+        self.rust_version
+            .as_ref()
+            .map(|v| v.normalized())
+            .transpose()
     }
 
-    pub fn resolved_authors(&self) -> Result<Option<&Vec<String>>, UnresolvedError> {
-        self.authors.as_ref().map(|v| v.resolved()).transpose()
+    pub fn normalized_version(&self) -> Result<Option<&semver::Version>, UnresolvedError> {
+        self.version.as_ref().map(|v| v.normalized()).transpose()
     }
 
-    pub fn resolved_build(&self) -> Result<Option<&String>, UnresolvedError> {
+    pub fn normalized_authors(&self) -> Result<Option<&Vec<String>>, UnresolvedError> {
+        self.authors.as_ref().map(|v| v.normalized()).transpose()
+    }
+
+    pub fn normalized_build(&self) -> Result<Option<&String>, UnresolvedError> {
         let readme = self.build.as_ref().ok_or(UnresolvedError)?;
         match readme {
             StringOrBool::Bool(false) => Ok(None),
@@ -224,60 +265,66 @@ impl TomlPackage {
         }
     }
 
-    pub fn resolved_exclude(&self) -> Result<Option<&Vec<String>>, UnresolvedError> {
-        self.exclude.as_ref().map(|v| v.resolved()).transpose()
+    pub fn normalized_exclude(&self) -> Result<Option<&Vec<String>>, UnresolvedError> {
+        self.exclude.as_ref().map(|v| v.normalized()).transpose()
     }
 
-    pub fn resolved_include(&self) -> Result<Option<&Vec<String>>, UnresolvedError> {
-        self.include.as_ref().map(|v| v.resolved()).transpose()
+    pub fn normalized_include(&self) -> Result<Option<&Vec<String>>, UnresolvedError> {
+        self.include.as_ref().map(|v| v.normalized()).transpose()
     }
 
-    pub fn resolved_publish(&self) -> Result<Option<&VecStringOrBool>, UnresolvedError> {
-        self.publish.as_ref().map(|v| v.resolved()).transpose()
+    pub fn normalized_publish(&self) -> Result<Option<&VecStringOrBool>, UnresolvedError> {
+        self.publish.as_ref().map(|v| v.normalized()).transpose()
     }
 
-    pub fn resolved_description(&self) -> Result<Option<&String>, UnresolvedError> {
-        self.description.as_ref().map(|v| v.resolved()).transpose()
-    }
-
-    pub fn resolved_homepage(&self) -> Result<Option<&String>, UnresolvedError> {
-        self.homepage.as_ref().map(|v| v.resolved()).transpose()
-    }
-
-    pub fn resolved_documentation(&self) -> Result<Option<&String>, UnresolvedError> {
-        self.documentation
+    pub fn normalized_description(&self) -> Result<Option<&String>, UnresolvedError> {
+        self.description
             .as_ref()
-            .map(|v| v.resolved())
+            .map(|v| v.normalized())
             .transpose()
     }
 
-    pub fn resolved_readme(&self) -> Result<Option<&String>, UnresolvedError> {
+    pub fn normalized_homepage(&self) -> Result<Option<&String>, UnresolvedError> {
+        self.homepage.as_ref().map(|v| v.normalized()).transpose()
+    }
+
+    pub fn normalized_documentation(&self) -> Result<Option<&String>, UnresolvedError> {
+        self.documentation
+            .as_ref()
+            .map(|v| v.normalized())
+            .transpose()
+    }
+
+    pub fn normalized_readme(&self) -> Result<Option<&String>, UnresolvedError> {
         let readme = self.readme.as_ref().ok_or(UnresolvedError)?;
-        readme.resolved().and_then(|sb| match sb {
+        readme.normalized().and_then(|sb| match sb {
             StringOrBool::Bool(false) => Ok(None),
             StringOrBool::Bool(true) => Err(UnresolvedError),
             StringOrBool::String(value) => Ok(Some(value)),
         })
     }
 
-    pub fn resolved_keywords(&self) -> Result<Option<&Vec<String>>, UnresolvedError> {
-        self.keywords.as_ref().map(|v| v.resolved()).transpose()
+    pub fn normalized_keywords(&self) -> Result<Option<&Vec<String>>, UnresolvedError> {
+        self.keywords.as_ref().map(|v| v.normalized()).transpose()
     }
 
-    pub fn resolved_categories(&self) -> Result<Option<&Vec<String>>, UnresolvedError> {
-        self.categories.as_ref().map(|v| v.resolved()).transpose()
+    pub fn normalized_categories(&self) -> Result<Option<&Vec<String>>, UnresolvedError> {
+        self.categories.as_ref().map(|v| v.normalized()).transpose()
     }
 
-    pub fn resolved_license(&self) -> Result<Option<&String>, UnresolvedError> {
-        self.license.as_ref().map(|v| v.resolved()).transpose()
+    pub fn normalized_license(&self) -> Result<Option<&String>, UnresolvedError> {
+        self.license.as_ref().map(|v| v.normalized()).transpose()
     }
 
-    pub fn resolved_license_file(&self) -> Result<Option<&String>, UnresolvedError> {
-        self.license_file.as_ref().map(|v| v.resolved()).transpose()
+    pub fn normalized_license_file(&self) -> Result<Option<&String>, UnresolvedError> {
+        self.license_file
+            .as_ref()
+            .map(|v| v.normalized())
+            .transpose()
     }
 
-    pub fn resolved_repository(&self) -> Result<Option<&String>, UnresolvedError> {
-        self.repository.as_ref().map(|v| v.resolved()).transpose()
+    pub fn normalized_repository(&self) -> Result<Option<&String>, UnresolvedError> {
+        self.repository.as_ref().map(|v| v.normalized()).transpose()
     }
 }
 
@@ -285,14 +332,14 @@ impl TomlPackage {
 #[derive(Serialize, Copy, Clone, Debug)]
 #[serde(untagged)]
 pub enum InheritableField<T> {
-    /// The type that that is used when not inheriting from a workspace.
+    /// The type that is used when not inheriting from a workspace.
     Value(T),
     /// The type when inheriting from a workspace.
     Inherit(TomlInheritedField),
 }
 
 impl<T> InheritableField<T> {
-    pub fn resolved(&self) -> Result<&T, UnresolvedError> {
+    pub fn normalized(&self) -> Result<&T, UnresolvedError> {
         self.as_value().ok_or(UnresolvedError)
     }
 
@@ -582,7 +629,7 @@ impl From<WorkspaceValue> for bool {
 #[derive(Serialize, Clone, Debug)]
 #[serde(untagged)]
 pub enum InheritableDependency {
-    /// The type that that is used when not inheriting from a workspace.
+    /// The type that is used when not inheriting from a workspace.
     Value(TomlDependency),
     /// The type when inheriting from a workspace.
     Inherit(TomlInheritedDependency),
@@ -596,7 +643,7 @@ impl InheritableDependency {
         }
     }
 
-    pub fn resolved(&self) -> Result<&TomlDependency, UnresolvedError> {
+    pub fn normalized(&self) -> Result<&TomlDependency, UnresolvedError> {
         match self {
             InheritableDependency::Value(d) => Ok(d),
             InheritableDependency::Inherit(_) => Err(UnresolvedError),
@@ -729,6 +776,7 @@ pub struct TomlDetailedDependency<P: Clone = String> {
     // `path` is relative to the file it appears in. If that's a `Cargo.toml`, it'll be relative to
     // that TOML file, and if it's a `.cargo/config` file, it'll be relative to that file.
     pub path: Option<P>,
+    pub base: Option<PathBaseName>,
     pub git: Option<String>,
     pub branch: Option<String>,
     pub tag: Option<String>,
@@ -768,6 +816,7 @@ impl<P: Clone> Default for TomlDetailedDependency<P> {
             registry: Default::default(),
             registry_index: Default::default(),
             path: Default::default(),
+            base: Default::default(),
             git: Default::default(),
             branch: Default::default(),
             tag: Default::default(),
@@ -1039,7 +1088,7 @@ impl<'de> de::Deserialize<'de> for TomlDebugInfo {
         D: de::Deserializer<'de>,
     {
         use serde::de::Error as _;
-        let expecting = "a boolean, 0, 1, 2, \"line-tables-only\", or \"line-directives-only\"";
+        let expecting = "a boolean, 0, 1, 2, \"none\", \"limited\", \"full\", \"line-tables-only\", or \"line-directives-only\"";
         UntaggedEnumVisitor::new()
             .expecting(expecting)
             .bool(|value| {
@@ -1366,6 +1415,16 @@ impl<T: AsRef<str>> FeatureName<T> {
     }
 }
 
+str_newtype!(PathBaseName);
+
+impl<T: AsRef<str>> PathBaseName<T> {
+    /// Validated path base name
+    pub fn new(name: T) -> Result<Self, NameValidationError> {
+        restricted_names::validate_path_base_name(name.as_ref())?;
+        Ok(Self(name))
+    }
+}
+
 /// Corresponds to a `target` entry, but `TomlTarget` is already used.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "kebab-case")]
@@ -1402,7 +1461,7 @@ pub struct InheritableLints {
 }
 
 impl InheritableLints {
-    pub fn resolved(&self) -> Result<&TomlLints, UnresolvedError> {
+    pub fn normalized(&self) -> Result<&TomlLints, UnresolvedError> {
         if self.workspace {
             Err(UnresolvedError)
         } else {
